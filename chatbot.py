@@ -2,6 +2,14 @@ import os
 import sqlite3
 import shutil
 from pathlib import Path
+
+# ============================================
+# FIX: Disable ChromaDB Telemetry (set before Chroma imports)
+# ============================================
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY_IMPL"] = "none"
+os.environ["POSTHOG_DISABLED"] = "1"
+
 import fitz  # PyMuPDF
 import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -14,12 +22,6 @@ from langchain_core.documents import Document
 from huggingface_hub import InferenceClient
 import re
 from datetime import datetime
-
-# ============================================
-# FIX: Disable ChromaDB Telemetry
-# ============================================
-os.environ['ANONYMIZED_TELEMETRY'] = 'False'
-os.environ['CHROMA_TELEMETRY_IMPL'] = 'none'
 
 class ChatBot:
     """

@@ -1,4 +1,7 @@
 import os
+import sqlite3
+import shutil
+from pathlib import Path
 import fitz  # PyMuPDF
 import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
@@ -26,8 +29,8 @@ class ChatBot:
     3. Chain-of-Thought Prompting (structured reasoning)
     """
     def __init__(self):
-        # Konfigurasi Database - Menggunakan path relatif agar aman di Streamlit Cloud
-        self.persist_directory = "./chroma_db_adenomyosis"
+        # Konfigurasi Database - Gunakan path yang bisa ditulis (Streamlit Cloud sering read-only)
+        self.persist_directory = self._resolve_persist_directory()
         
         # Model Embedding
         self.embeddings_model = HuggingFaceEmbeddings(
@@ -36,6 +39,26 @@ class ChatBot:
         
         self._initialize_hf_client()
         self._setup_rag_chain()
+
+    def _resolve_persist_directory(self):
+        """Pilih direktori Chroma yang writable, fallback ke /tmp jika perlu."""
+        candidates = [
+            Path("./chroma_db_adenomyosis"),
+            Path("/tmp/chroma_db_adenomyosis"),
+        ]
+
+        for path in candidates:
+            try:
+                path.mkdir(parents=True, exist_ok=True)
+                test_file = path / ".write_test"
+                with open(test_file, "w", encoding="utf-8") as handle:
+                    handle.write("ok")
+                test_file.unlink(missing_ok=True)
+                return str(path)
+            except Exception:
+                continue
+
+        return "./chroma_db_adenomyosis"
 
     def _initialize_hf_client(self):
         """Menginisialisasi Hugging Face Client menggunakan Streamlit Secrets."""
@@ -57,11 +80,21 @@ class ChatBot:
 
         if db_exists:
             print(f"--- Memuat database Chroma dari {self.persist_directory} ---")
-            return Chroma(
-                persist_directory=self.persist_directory, 
-                embedding_function=self.embeddings_model,
-                collection_metadata={"hnsw:space": "cosine"}
-            )
+            try:
+                return Chroma(
+                    persist_directory=self.persist_directory,
+                    embedding_function=self.embeddings_model,
+                    collection_metadata={"hnsw:space": "cosine"},
+                )
+            except sqlite3.OperationalError as e:
+                st.warning(
+                    "Database Chroma bermasalah atau skema tidak kompatibel. "
+                    "Akan dibuat ulang dari folder data."
+                )
+                try:
+                    shutil.rmtree(self.persist_directory)
+                except Exception:
+                    pass
         else:
             # Di Streamlit Cloud, pastikan folder './data_adenomyosis' sudah di-upload ke GitHub
             print("--- Database belum ditemukan. Memulai proses indexing PDF... ---")

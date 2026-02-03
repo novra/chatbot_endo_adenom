@@ -281,6 +281,7 @@ Jawab dalam Bahasa Indonesia yang baik dan profesional."""
                 )
                 return response.choices[0].message.content.strip()
             except Exception as e:
+                print(f"HF Error: {type(e).__name__}: {e}")
                 return f"Maaf, terjadi gangguan koneksi ke server AI. Silakan coba lagi dalam beberapa saat."
 
         self.rag_chain = (

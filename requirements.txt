@@ -6,16 +6,23 @@ altair==5.2.0
 
 # LangChain
 langchain==0.2.16
+langchain-community==0.2.16
 langchain-core==0.2.38
+langchain-text-splitters==0.2.4
 langchain-huggingface==0.0.3
 langchain-chroma==0.1.4
 
 # Vector Database - Fixed version for telemetry issue
 chromadb==0.4.22
-posthog==3.5.0
+
+# PyTorch - CPU version for Streamlit Cloud (FIXED)
+torch==2.0.1
+torchvision==0.15.2
 
 # Hugging Face
 huggingface-hub==0.23.5
+transformers==4.46.3
+tokenizers==0.20.3
 sentence-transformers==2.7.0
 
 # Document Processing
@@ -24,6 +31,6 @@ python-dotenv==1.0.1
 
 # Core Dependencies
 numpy==1.26.4
-pydantic==2.11.10
-typing-extensions==4.12.2
+pydantic==1.10.13
+typing-extensions==4.11.0
 protobuf==4.25.3

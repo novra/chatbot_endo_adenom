@@ -1,16 +1,28 @@
-streamlit
-python-dotenv
-pymupdf
-# Mengunci versi LangChain agar stabil
+# Web Framework
+streamlit==1.31.1
+Pillow==10.2.0
+pandas==2.2.1
+altair==5.2.0
+
+# LangChain
 langchain==0.2.16
-langchain-community==0.2.16
 langchain-core==0.2.38
-langchain-text-splitters==0.2.4
 langchain-huggingface==0.0.3
 langchain-chroma==0.1.4
-chromadb
-# Mengunci huggingface-hub agar tidak konflik dengan transformers
-huggingface-hub<1.0
-transformers>=4.46.0
-tokenizers>=0.20.0
-sentence-transformers
+
+# Vector Database - Fixed version for telemetry issue
+chromadb==0.4.22
+
+# Hugging Face
+huggingface-hub==0.23.5
+sentence-transformers==2.7.0
+
+# Document Processing
+pymupdf==1.24.3
+python-dotenv==1.0.1
+
+# Core Dependencies
+numpy==1.26.4
+pydantic==1.10.13
+typing-extensions==4.11.0
+protobuf==4.25.3

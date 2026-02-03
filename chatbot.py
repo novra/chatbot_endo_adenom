@@ -31,6 +31,7 @@ class ChatBot:
     2. Metadata Filtering (kategori sumber, tahun, validitas)
     3. Enhanced error handling dan logging
     4. Proper HF token authentication
+    5. Chat completion (conversational task)
     """
     def __init__(self):
         # Konfigurasi Database
@@ -92,7 +93,7 @@ class ChatBot:
         except Exception as e:
             raise ValueError(f"❌ Error loading HF token: {e}")
         
-        # Initialize InferenceClient with Mistral (proven to work)
+        # Initialize InferenceClient with Mistral
         try:
             self.hf_client = InferenceClient(
                 model="mistralai/Mistral-7B-Instruct-v0.2",
@@ -101,15 +102,16 @@ class ChatBot:
             )
             print("✅ InferenceClient initialized: mistralai/Mistral-7B-Instruct-v0.2")
             
-            # Test connection with a simple request
+            # Test connection with chat_completion (the supported method)
             try:
-                test_response = self.hf_client.text_generation(
-                    "Test", 
-                    max_new_tokens=5
+                test_response = self.hf_client.chat_completion(
+                    messages=[{"role": "user", "content": "Hi"}],
+                    max_tokens=5
                 )
                 print(f"✅ Connection test successful")
             except Exception as test_error:
                 print(f"⚠️ Connection test warning: {test_error}")
+                # Don't fail here, just warn
             
         except Exception as e:
             error_msg = str(e)
@@ -201,7 +203,7 @@ class ChatBot:
         if any(keyword in filename_lower for keyword in ['jurnal', 'journal', 'paper', 'research']):
             metadata["source_type"] = "Jurnal Ilmiah"
             metadata["validity_level"] = "high"
-        elif any(keyword in filename_lower for keyword in ['guideline', 'pedomen', 'clinical']):
+        elif any(keyword in filename_lower for keyword in ['guideline', 'pedoman', 'clinical']):
             metadata["source_type"] = "Guideline Klinis"
             metadata["validity_level"] = "very_high"
         elif any(keyword in filename_lower for keyword in ['textbook', 'buku', 'book']):
@@ -277,7 +279,7 @@ class ChatBot:
         return docs
 
     def _setup_rag_chain(self):
-        """Membangun RAG chain dengan Mistral text generation."""
+        """Membangun RAG chain dengan Mistral chat completion."""
         self.vector_store = self._initialize_chroma()
         
         if self.vector_store is None:
@@ -303,50 +305,49 @@ class ChatBot:
             return "\n\n---\n\n".join(formatted_chunks)
 
         def call_llm(inputs):
-            """Call Mistral with text_generation (more stable than chat_completion)."""
+            """Call Mistral using chat_completion (the supported method)."""
             
             # Truncate context
             max_context_length = 1500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             
-            print(f"\n=== Calling Mistral ===")
+            print(f"\n=== Calling Mistral Chat ===")
             print(f"Question: {question[:80]}...")
             print(f"Context: {len(context)} chars")
             
             try:
-                # Mistral instruction format
-                prompt = f"""<s>[INST] Anda adalah asisten medis yang membantu menjelaskan tentang adenomyosis dan endometriosis.
+                # Use chat_completion (the supported task type)
+                messages = [
+                    {
+                        "role": "system",
+                        "content": "Anda adalah asisten medis yang ahli dalam adenomyosis dan endometriosis. Jawab dalam Bahasa Indonesia dengan jelas dan profesional."
+                    },
+                    {
+                        "role": "user",
+                        "content": f"""Berdasarkan informasi medis berikut:
 
-Berdasarkan informasi medis berikut:
 {context}
 
-Pertanyaan: {question}
+Pertanyaan pasien: {question}
 
-Jawab dalam Bahasa Indonesia dengan jelas dan mudah dipahami (2-3 paragraf). Akhiri dengan anjuran konsultasi dokter. [/INST]"""
-
-                print("Sending to HF API...")
+Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsultasi dokter spesialis."""
+                    }
+                ]
                 
-                response = self.hf_client.text_generation(
-                    prompt,
-                    max_new_tokens=400,
+                print("Sending to HF API (chat_completion)...")
+                
+                response = self.hf_client.chat_completion(
+                    messages=messages,
+                    max_tokens=400,
                     temperature=0.7,
-                    top_p=0.9,
-                    do_sample=True,
-                    repetition_penalty=1.1
+                    top_p=0.9
                 )
                 
-                print(f"✅ Response received: {len(response)} chars")
+                # Extract the answer
+                answer = response.choices[0].message.content.strip()
                 
-                # Clean up response
-                answer = response.strip()
-                
-                # Remove instruction markers if present
-                if "[/INST]" in answer:
-                    answer = answer.split("[/INST]")[-1].strip()
-                if "</s>" in answer:
-                    answer = answer.replace("</s>", "").strip()
-                
+                print(f"✅ Response received: {len(answer)} chars")
                 return answer
                 
             except Exception as e:
@@ -363,6 +364,7 @@ Jawab dalam Bahasa Indonesia dengan jelas dan mudah dipahami (2-3 paragraf). Akh
 **Type**: {error_type}
 **Message**: {error_msg[:400]}
 **Model**: mistralai/Mistral-7B-Instruct-v0.2
+**Method**: chat_completion (conversational)
 **Token Set**: {bool(os.environ.get('HF_TOKEN'))}
 **Token Length**: {len(os.environ.get('HF_TOKEN', ''))}
                     """)
@@ -433,6 +435,15 @@ Model `mistralai/Mistral-7B-Instruct-v0.2` tidak dapat diakses.
 - Nama model salah
 
 **Error:** {error_msg[:200]}"""
+
+        elif "not supported" in error_lower or "task" in error_lower:
+            return f"""⚠️ **Error konfigurasi model**
+
+**Error:** {error_msg[:250]}
+
+**Untuk Admin:** Periksa task type yang didukung model.
+
+Coba lagi atau hubungi administrator."""
 
         else:
             # Generic error with helpful guidance
@@ -507,7 +518,7 @@ Model `mistralai/Mistral-7B-Instruct-v0.2` tidak dapat diakses.
             print(f"Traceback:\n{traceback.format_exc()}")
             
             return {
-                "answer": f"❌ Error sistem: {error_msg[:200]}",
+                "answer": f"❌ Error sistem: {error_msg[:200]}. Silakan coba lagi atau hubungi administrator.",
                 "sources": [],
                 "metadata": {}
             }

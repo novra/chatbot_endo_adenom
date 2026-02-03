@@ -63,6 +63,8 @@ def render_sidebar():
             key="nav_radio"
         )
         st.divider()
+        # DEBUG MODE TOGGLE
+        st.session_state.debug_mode = st.checkbox("🐛 Debug Mode", value=False)
         
         # Info tentang improvement
         st.success("**✨ Perbaikan Terbaru:**")
@@ -197,3 +199,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

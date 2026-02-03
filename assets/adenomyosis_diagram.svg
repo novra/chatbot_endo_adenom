@@ -1,0 +1,97 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 950 600" width="950" height="600">
+  <defs>
+    <linearGradient id="uterusSkinGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#eebabb;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#dba3a4;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="muscleWallGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" style="stop-color:#c76f6f;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#a34f4f;stop-opacity:1" />
+    </linearGradient>
+    <linearGradient id="innerLiningGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" style="stop-color:#ffd6d9;stop-opacity:1" />
+      <stop offset="100%" style="stop-color:#ffc2c7;stop-opacity:1" />
+    </linearGradient>
+    <radialGradient id="lesionGrad" cx="50%" cy="50%" r="50%" fx="50%" fy="50%">
+      <stop offset="0%" style="stop-color:#7a0000;stop-opacity:1" />
+      <stop offset="80%" style="stop-color:#4a0000;stop-opacity:1" />
+    </radialGradient>
+    <style>
+      .title { font-family: Arial, sans-serif; font-size: 28px; font-weight: bold; fill: #333; text-anchor: middle; }
+      .subtitle-header { font-family: Arial, sans-serif; font-size: 22px; font-weight: bold; fill: #8b0000; text-anchor: middle; }
+      .subtitle-desc { font-family: Arial, sans-serif; font-size: 16px; fill: #555; text-anchor: middle; }
+      .label-text { font-family: Arial, sans-serif; font-size: 14px; fill: #222; }
+      .label-line { stroke: #444; stroke-width: 1.5; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="100%" height="100%" fill="#fcfcfc"/>
+
+  <text x="475" y="50" class="title">PERBEDAAN: ENDOMETRIOSIS vs ADENOMYOSIS</text>
+  
+  <line x1="475" y1="100" x2="475" y2="550" stroke="#ccc" stroke-width="2" stroke-dasharray="8,8"/>
+
+  <g transform="translate(25, 100)">
+    <text x="210" y="30" class="subtitle-header">ENDOMETRIOSIS</text>
+    <text x="210" y="55" class="subtitle-desc">(Jaringan tumbuh DI LUAR rahim)</text>
+
+    <g transform="translate(20, 100)">
+      <path d="M190,20 C150,-20 230,-20 190,20 C140,50 110,180 160,250 C175,270 205,270 220,250 C270,180 240,50 190,20 Z" fill="url(#uterusSkinGrad)" stroke="#c48888" stroke-width="2"/>
+      
+      <path d="M140,50 C80,30 40,80 30,130" stroke="url(#uterusSkinGrad)" stroke-width="14" fill="none" stroke-linecap="round"/>
+      <path d="M240,50 C300,30 340,80 350,130" stroke="url(#uterusSkinGrad)" stroke-width="14" fill="none" stroke-linecap="round"/>
+      <ellipse cx="35" cy="155" rx="25" ry="18" fill="#dcaaaa"/>
+      <ellipse cx="345" cy="155" rx="25" ry="18" fill="#dcaaaa"/>
+
+      <circle cx="30" cy="150" r="7" fill="url(#lesionGrad)"/>
+      <circle cx="45" cy="160" r="6" fill="url(#lesionGrad)"/>
+      <circle cx="350" cy="150" r="8" fill="url(#lesionGrad)"/>
+      <circle cx="80" cy="55" r="5" fill="url(#lesionGrad)"/>
+      <circle cx="300" cy="55" r="5" fill="url(#lesionGrad)"/>
+      <circle cx="160" cy="120" r="6" fill="url(#lesionGrad)"/>
+      <circle cx="230" cy="180" r="5" fill="url(#lesionGrad)"/>
+
+      <line x1="80" y1="55" x2="20" y2="20" class="label-line"/>
+      <text x="15" y="15" class="label-text" text-anchor="end">Tuba Falopi</text>
+
+      <line x1="350" y1="150" x2="400" y2="180" class="label-line"/>
+      <text x="405" y="195" class="label-text">Lesi/Kista pada Ovarium</text>
+
+      <line x1="190" y1="260" x2="190" y2="320" class="label-line"/>
+      <text x="190" y="340" class="label-text" text-anchor="middle">Rahim (Ukuran Normal)</text>
+    </g>
+  </g>
+
+  <g transform="translate(500, 100)">
+    <text x="235" y="30" class="subtitle-header">ADENOMYOSIS</text>
+    <text x="235" y="55" class="subtitle-desc">(Jaringan tumbuh DI DALAM dinding otot rahim)</text>
+
+    <g transform="translate(45, 90)">
+      <path d="M200,10 C130,-30 270,-30 200,10 C110,60 50,220 150,300 C180,325 220,325 250,300 C350,220 290,60 200,10 Z" fill="url(#muscleWallGrad)" stroke="#914444" stroke-width="3"/>
+      
+      <path d="M200,60 C180,60 170,120 180,180 C185,210 200,250 200,250 C200,250 215,210 220,180 C230,120 220,60 200,60 Z" fill="url(#innerLiningGrad)" stroke="#eebabb" stroke-width="1"/>
+
+      <g fill="url(#lesionGrad)" opacity="0.9">
+        <circle cx="120" cy="100" r="5"/> <circle cx="140" cy="150" r="4"/>
+        <circle cx="100" cy="180" r="6"/> <circle cx="130" cy="220" r="5"/>
+        <circle cx="280" cy="100" r="5"/> <circle cx="260" cy="150" r="4"/>
+        <circle cx="300" cy="180" r="6"/> <circle cx="270" cy="220" r="5"/>
+        <circle cx="200" cy="280" r="4"/> <circle cx="200" cy="35" r="4"/>
+      </g>
+
+      <line x1="200" y1="60" x2="200" y2="30" class="label-line"/>
+      <text x="200" y="25" class="label-text" text-anchor="middle">Lapisan Rahim Normal</text>
+
+      <line x1="100" y1="180" x2="10" y2="180" class="label-line"/>
+      <text x="5" y="175" class="label-text" text-anchor="end">Dinding Otot Rahim</text>
+      <text x="5" y="195" class="label-text" text-anchor="end">(Menebal/Membesar)</text>
+
+      <line x1="300" y1="180" x2="380" y2="180" class="label-line"/>
+      <text x="385" y="175" class="label-text">Jaringan Endometrium di dalam otot</text>
+      <text x="385" y="195" class="label-text" font-style="italic">(Bercak di dalam dinding)</text>
+
+      <line x1="200" y1="315" x2="200" y2="350" class="label-line"/>
+      <text x="200" y="370" class="label-text" text-anchor="middle">Rahim (Membesar &amp; Lunak)</text>
+    </g>
+  </g>
+</svg>

@@ -1,5 +1,5 @@
 import streamlit as st
-from dotenv import load_dotenv
+# REMOVED: from dotenv import load_dotenv 
 
 # Konfigurasi halaman (Wajib di baris pertama)
 st.set_page_config(
@@ -8,7 +8,8 @@ st.set_page_config(
     layout="wide"
 )
 
-load_dotenv()
+# REMOVED: load_dotenv() 
+# Streamlit Cloud handles secrets automatically via st.secrets
 
 from chatbot import ChatBot
 from utils import initialize_session_state
@@ -20,10 +21,13 @@ from common_questions import COMMON_QUESTIONS
 def get_chatbot():
     """Menginisialisasi dan mengembalikan instance ChatBot."""
     try:
+        # PENTING: Pastikan di dalam chatbot.py Anda sudah menggunakan st.secrets
+        # untuk mengambil PINECONE_API_KEY dan HUGGINGFACE_API_KEY
         bot = ChatBot()
         return bot
-    except ValueError as e:
-        st.error(f"Error Inisialisasi: {e}. Mohon periksa file .env Anda.")
+    except Exception as e:
+        # Changed error message to refer to Streamlit Secrets instead of .env
+        st.error(f"Error Inisialisasi: {e}. Mohon periksa pengaturan Secrets di dashboard Streamlit Anda.")
         return None
 
 bot = get_chatbot()
@@ -38,15 +42,17 @@ def render_header():
     st.title("🩺 Asisten Ahli: Adenomyosis & Endometriosis")
     st.markdown(
         "Aplikasi ini menggunakan teknologi **RAG (Retrieval-Augmented Generation)** dengan model **Gemma 2** "
-        "dan database vektor lokal **ChromaDB** dengan **metadata filtering** untuk memberikan jawaban berbasis bukti ilmiah."
+        "dan database vektor **Pinecone** untuk memberikan jawaban berbasis bukti ilmiah."
     )
     st.markdown(
-        "<div style='text-align: right; opacity: 0.7; font-size: 0.9em; margin-top: 1em;'>"
-        "Dibuat oleh: <strong>Nuraisa Novia Hidayati</strong> (Riset Prototipe)"
-        "</div>",
+        f"<div style='text-align: right; opacity: 0.7; font-size: 0.9em; margin-top: 1em;'>"
+        f"Dibuat oleh: <strong>Nuraisa Novia Hidayati</strong> (Riset Prototipe)"
+        f"</div>",
         unsafe_allow_html=True
     )
     st.divider()
+
+# ... (rest of your render functions remain the same) ...
 
 def render_sidebar():
     """Menampilkan sidebar navigasi."""

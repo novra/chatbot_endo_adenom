@@ -1,3 +1,8 @@
+import os
+
+# Workaround: avoid Streamlit file watcher scanning torch.classes
+os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
+
 import streamlit as st
 from dotenv import load_dotenv
 

@@ -66,6 +66,7 @@ class ChatBot:
         """Menginisialisasi Hugging Face Client menggunakan Streamlit Secrets."""
         try:
             hf_token = st.secrets["HUGGINGFACE_API_KEY"]
+            print("HF token loaded:", bool(hf_token))
         except KeyError:
             raise ValueError("HUGGINGFACE_API_KEY tidak ditemukan di Streamlit Secrets.")
         

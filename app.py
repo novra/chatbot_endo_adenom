@@ -1,58 +1,62 @@
 import streamlit as st
-# REMOVED: from dotenv import load_dotenv 
+from dotenv import load_dotenv
 
-# Konfigurasi halaman (Wajib di baris pertama)
+# Konfigurasi halaman harus menjadi perintah Streamlit pertama
 st.set_page_config(
     page_title="Asisten Adenomyosis",
-    page_icon="🩺",
-    layout="wide"
+    page_icon="\U0001F9EA",
+    layout="wide",
 )
 
-# REMOVED: load_dotenv() 
-# Streamlit Cloud handles secrets automatically via st.secrets
+# Muat environment variables dari file .env
+load_dotenv()
 
 from chatbot import ChatBot
-from utils import initialize_session_state
-from visualizations import show_adenomyosis_diagram, show_symptoms_chart, show_treatment_options, show_age_distribution, show_adenomyosis_vs_endometriosis
-from common_questions import COMMON_QUESTIONS
+from utils import initialize_session_state  # Kita masih butuh ini
+from visualizations import (
+    show_adenomyosis_diagram,
+    show_symptoms_chart,
+    show_treatment_options,
+    show_age_distribution,
+    show_adenomyosis_vs_endometriosis,
+)
+from common_questions import COMMON_QUESTIONS, QUICK_TOPICS
 
-# Inisialisasi ChatBot dengan caching
+# Inisialisasi ChatBot dengan caching agar tidak loading ulang
 @st.cache_resource
 def get_chatbot():
-    """Menginisialisasi dan mengembalikan instance ChatBot."""
+    """Menginisialisasi dan mengembalikan instance ChatBot yang di-cache."""
     try:
-        # PENTING: Pastikan di dalam chatbot.py Anda sudah menggunakan st.secrets
-        # untuk mengambil PINECONE_API_KEY dan HUGGINGFACE_API_KEY
         bot = ChatBot()
         return bot
-    except Exception as e:
-        # Changed error message to refer to Streamlit Secrets instead of .env
-        st.error(f"Error Inisialisasi: {e}. Mohon periksa pengaturan Secrets di dashboard Streamlit Anda.")
+    except ValueError as e:
+        st.error(f"Error Inisialisasi: {e}. Mohon periksa file .env Anda.")
         return None
+
 
 bot = get_chatbot()
 
 # Inisialisasi session state
 initialize_session_state()
 
-# --- Fungsi Render UI ---
+
+# --- Fungsi-fungsi untuk Render UI ---
 
 def render_header():
     """Menampilkan header aplikasi."""
-    st.title("🩺 Asisten Ahli: Adenomyosis & Endometriosis")
+    st.title("\U0001F9EA Asisten Ahli: Adenomyosis & Endometriosis")
     st.markdown(
-        "Aplikasi ini menggunakan teknologi **RAG (Retrieval-Augmented Generation)** dengan model **Gemma 2** "
-        "dan database vektor **Pinecone** untuk memberikan jawaban berbasis bukti ilmiah."
+        "Aplikasi ini menggunakan RAG (Retrieval-Augmented Generation) dengan model **Mistral** dan database **Pinecone** "
+        "untuk menjawab pertanyaan berdasarkan dokumen medis."
     )
     st.markdown(
-        f"<div style='text-align: right; opacity: 0.7; font-size: 0.9em; margin-top: 1em;'>"
-        f"Dibuat oleh: <strong>Nuraisa Novia Hidayati</strong> (Riset Prototipe)"
-        f"</div>",
-        unsafe_allow_html=True
+        "<div style='text-align: right; opacity: 0.7; font-size: 0.9em; margin-top: 1em;'>"
+        "Dibuat oleh: <strong>Nuraisa Novia Hidayati</strong> (Versi Mistral)"
+        "</div>",
+        unsafe_allow_html=True,
     )
     st.divider()
 
-# ... (rest of your render functions remain the same) ...
 
 def render_sidebar():
     """Menampilkan sidebar navigasi."""
@@ -60,141 +64,109 @@ def render_sidebar():
         st.header("Navigasi")
         st.session_state.current_page = st.radio(
             "Pilih Halaman:",
-            ["💬 Chat Konsultasi", "📊 Visualisasi Data", "📚 Informasi Umum"],
-            key="nav_radio"
+            ["\U0001F4AC Chat", "\U0001F4CA Visualisasi", "\U0001F4DA Informasi Umum"],
+            key="nav_radio",
+            captions=["Tanya jawab dengan AI", "Grafik & data visual", "Pertanyaan umum"],
         )
-        st.divider()
-        
-        # Info tentang improvement
-        st.success("**✨ Perbaikan Terbaru:**")
-        st.markdown("""
-        - 🎯 Semantic Chunking (context preservation)
-        - 🏷️ Metadata Filtering (validitas sumber)
-        - 🧠 Chain-of-Thought Reasoning
-        """)
-        
         st.divider()
         st.info(
-            "**Disclaimer:** Informasi ini dikurasi dari database riset terbatas. "
-            "Selalu konsultasikan keputusan medis dengan dokter spesialis (Obgyn)."
+            "**Perhatian:** Informasi dari chatbot ini bersifat edukatif dan tidak menggantikan "
+            "konsultasi medis profesional."
         )
 
-def render_chat_page():
-    """Menampilkan halaman chat dengan metadata enrichment."""
-    st.header("💬 Chat dengan Asisten AI")
 
-    # Tampilkan riwayat pesan
+def render_chat_page():
+    """Menampilkan halaman utama untuk chat."""
+    st.header("\U0001F4AC Chat dengan Asisten AI")
+
+    # Menampilkan riwayat chat
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            
-            # Tampilkan sources dengan metadata jika ada
+            # Tampilkan sumber jika ada
             if "sources" in message and message["sources"]:
-                st.markdown("---")
-                st.markdown("**📚 Sumber Referensi:**")
-                
-                # Jika ada metadata, tampilkan dengan detail
-                if "metadata" in message and message["metadata"]:
-                    for source in message["sources"]:
-                        source_clean = source.replace(".pdf", "")
-                        meta = message["metadata"].get(source, {})
-                        
-                        # Badge berdasarkan validity
-                        validity = meta.get("validity", "unknown")
-                        if validity == "high":
-                            badge = "🟢 High"
-                        elif validity == "medium":
-                            badge = "🟡 Medium"
-                        else:
-                            badge = "⚪ Low"
-                        
-                        source_type = meta.get("type", "Unknown")
-                        year = meta.get("year", "N/A")
-                        
-                        st.caption(f"• **{source_clean}** | {source_type} | Validitas: {badge} | Tahun: {year}")
-                else:
-                    # Fallback jika metadata tidak ada
-                    sources_clean = [s.replace(".pdf", "") for s in message["sources"]]
-                    st.caption(f"📄 {', '.join(sources_clean)}")
+                sources_text = "Sumber: " + ", ".join(message["sources"])
+                st.caption(sources_text)
 
-    # Input User
-    if user_input := st.chat_input("Contoh: Apa bedanya adenomiosis dengan endometriosis?"):
+    # Input dari pengguna
+    if user_input := st.chat_input("Ketik pertanyaan Anda tentang adenomyosis..."):
+        # Tambah pesan pengguna ke riwayat
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)
 
+        # Generate dan tampilkan respons dari chatbot
         with st.chat_message("assistant"):
-            with st.spinner("Menganalisis dokumen medis dengan metadata filtering..."):
+            with st.spinner("Asisten sedang berpikir..."):
                 response = bot.ask(user_input)
                 st.markdown(response["answer"])
-                
-                # Tampilkan sumber dengan metadata
-                if response["sources"]:
-                    st.markdown("---")
-                    st.markdown("**📚 Sumber Referensi:**")
-                    
-                    for source in response["sources"]:
-                        source_clean = source.replace(".pdf", "")
-                        meta = response["metadata"].get(source, {})
-                        
-                        # Badge berdasarkan validity
-                        validity = meta.get("validity", "unknown")
-                        if validity == "high":
-                            badge = "🟢 High"
-                        elif validity == "medium":
-                            badge = "🟡 Medium"
-                        else:
-                            badge = "⚪ Low"
-                        
-                        source_type = meta.get("type", "Unknown")
-                        year = meta.get("year", "N/A")
-                        
-                        st.caption(f"• **{source_clean}** | {source_type} | Validitas: {badge} | Tahun: {year}")
-                else:
-                    st.caption("ℹ️ Sumber: Pengetahuan Umum Model (Tidak ada dokumen spesifik ditemukan)")
-                
-                # Simpan ke session state dengan metadata
-                st.session_state.messages.append({
-                    "role": "assistant",
-                    "content": response["answer"],
-                    "sources": response["sources"],
-                    "metadata": response["metadata"]
-                })
+
+                # Tampilkan sumber di bawah jawaban
+                sources_text = (
+                    "Sumber: " + ", ".join(response["sources"])
+                    if response["sources"]
+                    else "Sumber: Tidak ditemukan dokumen spesifik."
+                )
+                st.caption(sources_text)
+
+                # Tambah respons AI ke riwayat
+                st.session_state.messages.append(
+                    {
+                        "role": "assistant",
+                        "content": response["answer"],
+                        "sources": response["sources"],
+                    }
+                )
+
 
 def render_visualization_page():
-    """Menampilkan halaman visualisasi."""
-    st.header("📊 Visualisasi Data Riset")
-    st.write("Grafik ini merepresentasikan data umum mengenai Adenomiosis.")
-    
-    viz_tabs = st.tabs(["Anatomi", "Gejala", "Pengobatan", "Umur", "Perbandingan"])
-    with viz_tabs[0]: show_adenomyosis_diagram()
-    with viz_tabs[1]: show_symptoms_chart()
-    with viz_tabs[2]: show_treatment_options()
-    with viz_tabs[3]: show_age_distribution()
-    with viz_tabs[4]: show_adenomyosis_vs_endometriosis()
+    """Menampilkan halaman visualisasi data."""
+    st.header("\U0001F4CA Visualisasi Data")
+    st.write("Grafik dan diagram untuk membantu memahami adenomyosis secara visual.")
+
+    viz_tabs = st.tabs(
+        ["Anatomi", "Gejala Umum", "Opsi Pengobatan", "Distribusi Usia", "Perbandingan"]
+    )
+    with viz_tabs[0]:
+        show_adenomyosis_diagram()
+    with viz_tabs[1]:
+        show_symptoms_chart()
+    with viz_tabs[2]:
+        show_treatment_options()
+    with viz_tabs[3]:
+        show_age_distribution()
+    with viz_tabs[4]:
+        show_adenomyosis_vs_endometriosis()
+
 
 def render_info_page():
-    """Menampilkan FAQ."""
-    st.header("📚 FAQ (Frequently Asked Questions)")
+    """Menampilkan halaman FAQ."""
+    st.header("\U0001F4DA Informasi & Pertanyaan Umum")
+    st.write("Berikut adalah jawaban untuk beberapa pertanyaan yang sering diajukan.")
+
     for q_data in COMMON_QUESTIONS.values():
         with st.expander(q_data["question"]):
             st.markdown(q_data["answer"])
 
+
 # --- Main App ---
 def main():
+    """Fungsi utama untuk menjalankan aplikasi Streamlit."""
     if not bot:
-        st.error("Gagal memuat sistem AI.")
+        st.error("Gagal memuat chatbot. Aplikasi tidak dapat dijalankan.")
         return
 
     render_header()
     render_sidebar()
 
-    if st.session_state.current_page == "💬 Chat Konsultasi":
+    # Navigasi halaman
+    if st.session_state.current_page == "\U0001F4AC Chat":
         render_chat_page()
-    elif st.session_state.current_page == "📊 Visualisasi Data":
+    elif st.session_state.current_page == "\U0001F4CA Visualisasi":
         render_visualization_page()
     else:
         render_info_page()
+
 
 if __name__ == "__main__":
     main()

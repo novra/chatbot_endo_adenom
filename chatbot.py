@@ -26,22 +26,27 @@ import traceback
 
 class ChatBot:
     """
-    ChatBot menggunakan Chat Completion API dengan perbaikan:
+    ChatBot menggunakan Mistral-7B-Instruct dengan perbaikan:
     1. Semantic Chunking dengan overlap besar (context preservation)
     2. Metadata Filtering (kategori sumber, tahun, validitas)
-    3. Chain-of-Thought Prompting (structured reasoning)
-    4. Enhanced error handling dan logging
+    3. Enhanced error handling dan logging
+    4. Proper HF token authentication
     """
     def __init__(self):
-        # Konfigurasi Database - Gunakan path yang bisa ditulis (Streamlit Cloud sering read-only)
+        # Konfigurasi Database
         self.persist_directory = self._resolve_persist_directory()
         
-        # Model Embedding
-        self.embeddings_model = HuggingFaceEmbeddings(
-            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
-        )
-        
+        # IMPORTANT: Initialize HF client FIRST to set environment variables
         self._initialize_hf_client()
+        
+        # Model Embedding - akan menggunakan token dari environment variable
+        self.embeddings_model = HuggingFaceEmbeddings(
+            model_name="sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
+            model_kwargs={'device': 'cpu'},
+            encode_kwargs={'normalize_embeddings': True}
+        )
+        print("✅ Embedding model initialized")
+        
         self._setup_rag_chain()
 
     def _resolve_persist_directory(self):
@@ -68,31 +73,48 @@ class ChatBot:
         return "./chroma_db_adenomyosis"
 
     def _initialize_hf_client(self):
-        """Menginisialisasi Hugging Face Client menggunakan Streamlit Secrets."""
+        """Menginisialisasi Hugging Face Client dengan proper token handling."""
         try:
             hf_token = st.secrets["HUGGINGFACE_API_KEY"]
             if not hf_token or len(hf_token) < 10:
                 raise ValueError("Token HuggingFace tidak valid")
-            print(f"✅ HF token loaded: {hf_token[:10]}...")
+            
+            # SET ENVIRONMENT VARIABLES for HuggingFace Hub
+            os.environ["HF_TOKEN"] = hf_token
+            os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
+            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
+            
+            print(f"✅ HF token set in environment")
+            print(f"Token preview: {hf_token[:15]}... (length: {len(hf_token)})")
+            
         except KeyError:
             raise ValueError("❌ HUGGINGFACE_API_KEY tidak ditemukan di Streamlit Secrets.")
         except Exception as e:
             raise ValueError(f"❌ Error loading HF token: {e}")
         
-        # Menggunakan Google Gemma 2 (fallback to Mistral if needed)
+        # Initialize InferenceClient with Mistral (proven to work)
         try:
             self.hf_client = InferenceClient(
-                model="google/gemma-2-2b-it",
-                token=hf_token
-            )
-            print("✅ HuggingFace Client initialized with Gemma 2")
-        except Exception as e:
-            print(f"⚠️ Failed to init Gemma, trying Mistral: {e}")
-            self.hf_client = InferenceClient(
                 model="mistralai/Mistral-7B-Instruct-v0.2",
-                token=hf_token
+                token=hf_token,
+                timeout=60
             )
-            print("✅ HuggingFace Client initialized with Mistral")
+            print("✅ InferenceClient initialized: mistralai/Mistral-7B-Instruct-v0.2")
+            
+            # Test connection with a simple request
+            try:
+                test_response = self.hf_client.text_generation(
+                    "Test", 
+                    max_new_tokens=5
+                )
+                print(f"✅ Connection test successful")
+            except Exception as test_error:
+                print(f"⚠️ Connection test warning: {test_error}")
+            
+        except Exception as e:
+            error_msg = str(e)
+            print(f"❌ Failed to initialize InferenceClient: {error_msg}")
+            raise ValueError(f"Gagal menghubungkan ke Hugging Face API: {error_msg}")
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -167,7 +189,7 @@ class ChatBot:
             "category": "general"
         }
         
-        # Extract year from filename (e.g., 2020, 2021, etc.)
+        # Extract year from filename
         year_match = re.search(r'(19|20)\d{2}', filename)
         if year_match:
             metadata["year"] = int(year_match.group())
@@ -179,7 +201,7 @@ class ChatBot:
         if any(keyword in filename_lower for keyword in ['jurnal', 'journal', 'paper', 'research']):
             metadata["source_type"] = "Jurnal Ilmiah"
             metadata["validity_level"] = "high"
-        elif any(keyword in filename_lower for keyword in ['guideline', 'pedoman', 'clinical']):
+        elif any(keyword in filename_lower for keyword in ['guideline', 'pedomen', 'clinical']):
             metadata["source_type"] = "Guideline Klinis"
             metadata["validity_level"] = "very_high"
         elif any(keyword in filename_lower for keyword in ['textbook', 'buku', 'book']):
@@ -202,10 +224,7 @@ class ChatBot:
         return metadata
 
     def _load_pdfs_from_folder(self, folder_path):
-        """
-        Load PDFs dengan metadata enrichment
-        ChromaDB requires all metadata values to be str/int/float/bool (not None)
-        """
+        """Load PDFs dengan metadata enrichment."""
         if not os.path.exists(folder_path):
             st.error(f"Folder '{folder_path}' tidak ditemukan.")
             print(f"❌ Folder not found: {folder_path}")
@@ -221,47 +240,44 @@ class ChatBot:
                 with fitz.open(path) as doc:
                     text = "".join(page.get_text() for page in doc)
                     if text.strip():
-                        # Ekstraksi metadata dari filename
                         metadata = self._extract_metadata_from_filename(filename)
-                        
-                        # Tambahan metadata (pastikan tidak ada None)
                         metadata["page_count"] = len(doc)
                         metadata["indexed_at"] = datetime.now().isoformat()
                         
-                        # Double check: filter out any None values (safety net)
+                        # Filter None values
                         metadata = {k: v for k, v in metadata.items() if v is not None}
                         
-                        # Ensure all values are proper types
+                        # Ensure proper types
                         for key, value in metadata.items():
                             if not isinstance(value, (str, int, float, bool)):
                                 metadata[key] = str(value)
                         
                         docs.append(Document(page_content=text, metadata=metadata))
-                        print(f"✓ Loaded: {filename} | Category: {metadata['category']} | Validity: {metadata['validity_level']}")
+                        print(f"✓ Loaded: {filename} | Category: {metadata['category']}")
                     else:
                         print(f"⚠️ Empty PDF: {filename}")
                         
             except Exception as e: 
-                print(f"❌ Gagal memproses file {filename}: {e}")
+                print(f"❌ Failed to process {filename}: {e}")
         
-        # Summary statistik
+        # Summary
         if docs:
             categories = {}
             for doc in docs:
                 cat = doc.metadata.get("category", "unknown")
                 categories[cat] = categories.get(cat, 0) + 1
             
-            print(f"\n📊 SUMMARY DOKUMEN:")
-            print(f"Total dokumen: {len(docs)}")
+            print(f"\n📊 DOCUMENT SUMMARY:")
+            print(f"Total: {len(docs)} documents")
             for cat, count in categories.items():
-                print(f"  - {cat}: {count} dokumen")
+                print(f"  - {cat}: {count}")
         else:
             print("⚠️ No documents loaded!")
         
         return docs
 
     def _setup_rag_chain(self):
-        """Membangun RAG chain dengan st.secrets support."""
+        """Membangun RAG chain dengan Mistral text generation."""
         self.vector_store = self._initialize_chroma()
         
         if self.vector_store is None:
@@ -287,104 +303,69 @@ class ChatBot:
             return "\n\n---\n\n".join(formatted_chunks)
 
         def call_llm(inputs):
-            """Call LLM with comprehensive error handling and fallback strategies."""
+            """Call Mistral with text_generation (more stable than chat_completion)."""
             
-            # Truncate context if too long to avoid token limits
-            max_context_length = 3000
-            context = inputs['context']
-            if len(context) > max_context_length:
-                context = context[:max_context_length] + "\n[...konteks dipotong untuk efisiensi...]"
-            
+            # Truncate context
+            max_context_length = 1500
+            context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             
-            # Log for debugging
-            print(f"\n=== LLM Call ===")
-            print(f"Question: {question[:100]}...")
-            print(f"Context length: {len(context)} chars")
+            print(f"\n=== Calling Mistral ===")
+            print(f"Question: {question[:80]}...")
+            print(f"Context: {len(context)} chars")
             
             try:
-                # Strategy 1: Chat Completion (Preferred for Gemma/Mistral)
-                system_prompt = """Anda adalah Asisten Medis Ahli Ginekologi yang berspesialisasi dalam adenomyosis dan endometriosis.
+                # Mistral instruction format
+                prompt = f"""<s>[INST] Anda adalah asisten medis yang membantu menjelaskan tentang adenomyosis dan endometriosis.
 
-PERAN ANDA:
-- Memberikan informasi medis yang akurat berdasarkan literatur ilmiah
-- Menjelaskan kondisi medis dengan bahasa yang mudah dipahami
-- Selalu menekankan pentingnya konsultasi dengan dokter
-
-CARA MENJAWAB:
-1. Analisis konteks yang diberikan dengan teliti
-2. Berikan jawaban yang jelas dan terstruktur (2-4 paragraf)
-3. Jika informasi tidak cukup, sampaikan dengan jujur
-4. Akhiri dengan anjuran konsultasi medis profesional
-
-BATASAN:
-- Tidak memberikan diagnosis medis
-- Tidak meresepkan obat
-- Tidak menggantikan konsultasi dokter
-- Fokus pada edukasi dan informasi umum
-
-Jawab dalam Bahasa Indonesia yang baik dan profesional."""
-
-                user_message = f"""KONTEKS DARI DOKUMEN MEDIS:
+Berdasarkan informasi medis berikut:
 {context}
-
-PERTANYAAN PASIEN:
-{question}
-
-Berikan jawaban yang informatif, mudah dipahami, dan profesional."""
-
-                response = self.hf_client.chat_completion(
-                    messages=[
-                        {"role": "system", "content": system_prompt},
-                        {"role": "user", "content": user_message}
-                    ],
-                    max_tokens=500,
-                    temperature=0.6,
-                    top_p=0.9
-                )
-                
-                answer = response.choices[0].message.content.strip()
-                print(f"✅ LLM Response received ({len(answer)} chars)")
-                return answer
-                
-            except AttributeError as ae:
-                # Strategy 2: Fallback to Text Generation
-                print(f"⚠️ Chat completion not available, trying text generation: {ae}")
-                try:
-                    prompt = f"""Anda adalah asisten medis yang ahli dalam adenomyosis dan endometriosis.
-
-Konteks: {context}
 
 Pertanyaan: {question}
 
-Jawaban (dalam Bahasa Indonesia, 2-3 paragraf):"""
+Jawab dalam Bahasa Indonesia dengan jelas dan mudah dipahami (2-3 paragraf). Akhiri dengan anjuran konsultasi dokter. [/INST]"""
 
-                    response = self.hf_client.text_generation(
-                        prompt=prompt,
-                        max_new_tokens=400,
-                        temperature=0.6,
-                        top_p=0.9,
-                        do_sample=True
-                    )
-                    print(f"✅ Text generation response received")
-                    return response
-                    
-                except Exception as tg_error:
-                    print(f"❌ Text generation also failed: {tg_error}")
-                    return self._generate_fallback_response(question, str(tg_error))
-            
+                print("Sending to HF API...")
+                
+                response = self.hf_client.text_generation(
+                    prompt,
+                    max_new_tokens=400,
+                    temperature=0.7,
+                    top_p=0.9,
+                    do_sample=True,
+                    repetition_penalty=1.1
+                )
+                
+                print(f"✅ Response received: {len(response)} chars")
+                
+                # Clean up response
+                answer = response.strip()
+                
+                # Remove instruction markers if present
+                if "[/INST]" in answer:
+                    answer = answer.split("[/INST]")[-1].strip()
+                if "</s>" in answer:
+                    answer = answer.replace("</s>", "").strip()
+                
+                return answer
+                
             except Exception as e:
-                # Comprehensive error handling
-                error_msg = str(e)
                 error_type = type(e).__name__
+                error_msg = str(e)
                 
                 print(f"❌ LLM Error: {error_type}")
-                print(f"Error message: {error_msg}")
+                print(f"Error details: {error_msg}")
                 print(f"Traceback:\n{traceback.format_exc()}")
                 
-                # Display error in Streamlit for debugging
+                # Show in debug mode
                 if st.session_state.get('debug_mode', False):
-                    st.error(f"Debug - LLM Error: {error_type}: {error_msg[:200]}")
+                    st.error(f"""🐛 DEBUG ERROR:
+**Type**: {error_type}
+**Message**: {error_msg[:400]}
+**Model**: mistralai/Mistral-7B-Instruct-v0.2
+**Token Set**: {bool(os.environ.get('HF_TOKEN'))}
+**Token Length**: {len(os.environ.get('HF_TOKEN', ''))}
+                    """)
                 
                 return self._generate_fallback_response(question, error_msg)
 
@@ -397,55 +378,81 @@ Jawaban (dalam Bahasa Indonesia, 2-3 paragraf):"""
         print("✅ RAG chain configured successfully")
 
     def _generate_fallback_response(self, question, error_msg):
-        """Generate a helpful fallback response when LLM fails."""
+        """Generate helpful fallback response when LLM fails."""
         
-        # Check for specific error types
-        if "rate limit" in error_msg.lower() or "429" in error_msg:
-            return """Maaf, server AI sedang sibuk karena terlalu banyak permintaan. 
-            
-Silakan tunggu beberapa detik dan coba lagi. Jika masalah berlanjut, coba pertanyaan yang lebih sederhana.
+        error_lower = error_msg.lower()
+        
+        # Check specific error types
+        if "rate" in error_lower or "429" in error_msg:
+            return """⏳ **Server AI sedang sibuk** (rate limit tercapai).
 
-**Tips**: Cobalah bertanya dengan kalimat yang lebih singkat dan spesifik."""
+**Solusi:**
+1. Tunggu 1 menit
+2. Coba lagi dengan pertanyaan lebih singkat
+3. Jika terus terjadi, coba beberapa menit lagi
 
-        elif "token" in error_msg.lower() or "authentication" in error_msg.lower() or "401" in error_msg:
-            return """❌ Error: Konfigurasi API tidak valid. 
+Server Hugging Face gratis memiliki batasan request per jam."""
 
-Administrator: Mohon periksa konfigurasi HUGGINGFACE_API_KEY di Streamlit Secrets.
+        elif "401" in error_msg or "403" in error_msg or "token" in error_lower or "authentication" in error_lower:
+            return f"""🔑 **Error Autentikasi API**
 
-Untuk pengguna: Silakan hubungi administrator aplikasi."""
+**Untuk Admin:**
+Periksa HUGGINGFACE_API_KEY di Streamlit Secrets:
+1. Pastikan token valid (cek di https://huggingface.co/settings/tokens)
+2. Format: `HUGGINGFACE_API_KEY = "hf_..."`
+3. Token harus memiliki akses "read" minimal
 
-        elif "timeout" in error_msg.lower():
-            return """Maaf, koneksi ke server AI mengalami timeout. 
+**Error detail:** {error_msg[:150]}"""
 
-Silakan coba lagi dalam beberapa saat. Jika masalah terus terjadi, coba dengan pertanyaan yang lebih singkat."""
+        elif "503" in error_msg or "loading" in error_lower or "unavailable" in error_lower:
+            return """⚙️ **Model sedang loading oleh Hugging Face**
 
-        elif "model" in error_msg.lower() and "not found" in error_msg.lower():
-            return """❌ Error: Model AI tidak tersedia.
+Model Mistral-7B sedang di-load ke server (biasa terjadi setelah idle).
 
-Administrator: Model yang dikonfigurasi mungkin tidak tersedia atau memerlukan akses khusus.
+**Solusi:**
+1. Tunggu 30-60 detik
+2. Coba lagi
+3. Biasanya berhasil pada percobaan kedua"""
 
-Untuk pengguna: Silakan hubungi administrator aplikasi."""
+        elif "timeout" in error_lower:
+            return """⏱️ **Timeout - Koneksi lambat**
+
+**Solusi:**
+1. Coba lagi (mungkin server sibuk)
+2. Gunakan pertanyaan lebih singkat
+3. Periksa koneksi internet Anda"""
+
+        elif "model" in error_lower and ("not found" in error_lower or "does not exist" in error_lower):
+            return f"""🤖 **Model tidak tersedia**
+
+Model `mistralai/Mistral-7B-Instruct-v0.2` tidak dapat diakses.
+
+**Untuk Admin:** Model mungkin:
+- Tidak tersedia secara publik
+- Memerlukan akses khusus
+- Nama model salah
+
+**Error:** {error_msg[:200]}"""
 
         else:
-            # Generic error response
-            return f"""Maaf, terjadi gangguan teknis saat menghubungi server AI.
+            # Generic error with helpful guidance
+            return f"""❌ **Terjadi gangguan teknis**
 
-**Error**: {error_msg[:150]}
+**Error:** {error_msg[:250]}
 
-Silakan:
+**Yang bisa dilakukan:**
 1. Coba lagi dalam beberapa saat
-2. Gunakan pertanyaan yang lebih sederhana
-3. Hubungi administrator jika masalah berlanjut
+2. Gunakan pertanyaan lebih sederhana
+3. Coba halaman **📚 Informasi Umum** untuk FAQ
+4. Hubungi administrator jika berlanjut
 
-Atau coba lihat halaman **📚 Informasi Umum** untuk jawaban pertanyaan yang sering diajukan."""
+**Debug mode:** Aktifkan toggle "🐛 Debug Mode" di sidebar untuk info detail."""
 
     def ask(self, question: str):
-        """
-        Enhanced ask method dengan metadata tracking dan error handling
-        """
+        """Ask question and get answer with sources."""
         if not self.rag_chain:
             return {
-                "answer": "❌ Sistem belum siap. Pastikan folder 'data_adenomyosis' berisi file PDF dan database telah diinisialisasi.", 
+                "answer": "❌ Sistem belum siap. Database belum diinisialisasi.", 
                 "sources": [],
                 "metadata": {}
             }
@@ -456,14 +463,13 @@ Atau coba lihat halaman **📚 Informasi Umum** untuk jawaban pertanyaan yang se
             
             # Get answer from RAG chain
             answer = self.rag_chain.invoke(question)
-            print(f"Answer generated: {answer[:100]}...")
+            print(f"Answer: {answer[:100]}...")
             
-            # Retrieve source documents with metadata
+            # Retrieve source documents
             try:
                 retrieved_docs = self.source_retriever_chain.invoke(question)
-                print(f"Retrieved {len(retrieved_docs)} source documents")
+                print(f"Retrieved {len(retrieved_docs)} sources")
                 
-                # Extract sources with metadata
                 sources = []
                 source_metadata = {}
                 
@@ -472,7 +478,6 @@ Atau coba lihat halaman **📚 Informasi Umum** untuk jawaban pertanyaan yang se
                     if source_name not in sources:
                         sources.append(source_name)
                         
-                        # Get year, display "N/A" if year is 0
                         year_value = doc.metadata.get("year", 0)
                         year_display = year_value if year_value > 0 else "N/A"
                         
@@ -486,7 +491,7 @@ Atau coba lihat halaman **📚 Informasi Umum** untuk jawaban pertanyaan yang se
                 print(f"Sources: {sources}")
                 
             except Exception as retrieval_error:
-                print(f"⚠️ Source Retrieval Warning: {retrieval_error}")
+                print(f"⚠️ Source retrieval warning: {retrieval_error}")
                 sources = []
                 source_metadata = {}
             
@@ -501,15 +506,8 @@ Atau coba lihat halaman **📚 Informasi Umum** untuk jawaban pertanyaan yang se
             print(f"❌ RAG Error: {error_msg}")
             print(f"Traceback:\n{traceback.format_exc()}")
             
-            if "fetch_k" in error_msg:
-                return {
-                    "answer": "❌ Terjadi error konfigurasi pada sistem retrieval. Mohon hubungi administrator.",
-                    "sources": [],
-                    "metadata": {}
-                }
-            else:
-                return {
-                    "answer": f"❌ Maaf, terjadi kesalahan teknis: {error_msg[:200]}. Mohon coba lagi atau hubungi administrator.",
-                    "sources": [],
-                    "metadata": {}
-                }
+            return {
+                "answer": f"❌ Error sistem: {error_msg[:200]}",
+                "sources": [],
+                "metadata": {}
+            }

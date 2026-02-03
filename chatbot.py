@@ -26,12 +26,12 @@ import traceback
 
 class ChatBot:
     """
-    ChatBot menggunakan Mistral-7B-Instruct dengan perbaikan:
+    ChatBot menggunakan HuggingFace Serverless Inference dengan perbaikan:
     1. Semantic Chunking dengan overlap besar (context preservation)
     2. Metadata Filtering (kategori sumber, tahun, validitas)
     3. Enhanced error handling dan logging
     4. Proper HF token authentication
-    5. Chat completion (conversational task)
+    5. Multiple model fallback strategy
     """
     def __init__(self):
         # Konfigurasi Database
@@ -74,7 +74,7 @@ class ChatBot:
         return "./chroma_db_adenomyosis"
 
     def _initialize_hf_client(self):
-        """Menginisialisasi Hugging Face Client dengan proper token handling."""
+        """Menginisialisasi Hugging Face Client dengan fallback models."""
         try:
             hf_token = st.secrets["HUGGINGFACE_API_KEY"]
             if not hf_token or len(hf_token) < 10:
@@ -93,30 +93,49 @@ class ChatBot:
         except Exception as e:
             raise ValueError(f"❌ Error loading HF token: {e}")
         
-        # Initialize InferenceClient with Mistral
-        try:
-            self.hf_client = InferenceClient(
-                model="mistralai/Mistral-7B-Instruct-v0.2",
-                token=hf_token,
-                timeout=60
-            )
-            print("✅ InferenceClient initialized: mistralai/Mistral-7B-Instruct-v0.2")
-            
-            # Test connection with chat_completion (the supported method)
+        # Initialize InferenceClient (without specifying model - use serverless)
+        self.hf_client = InferenceClient(token=hf_token, timeout=60)
+        print("✅ InferenceClient initialized for serverless inference")
+        
+        # Try models in order (these work on free tier serverless API)
+        models_to_try = [
+            "HuggingFaceH4/zephyr-7b-beta",          # Fast, reliable, free
+            "mistralai/Mixtral-8x7B-Instruct-v0.1",  # Powerful
+            "meta-llama/Meta-Llama-3-8B-Instruct",   # Alternative
+            "microsoft/Phi-3-mini-4k-instruct",      # Lightweight
+        ]
+        
+        for model_name in models_to_try:
             try:
+                print(f"🔄 Testing model: {model_name}")
+                
+                # Test the model with a simple query
                 test_response = self.hf_client.chat_completion(
                     messages=[{"role": "user", "content": "Hi"}],
-                    max_tokens=5
+                    model=model_name,
+                    max_tokens=3
                 )
-                print(f"✅ Connection test successful")
-            except Exception as test_error:
-                print(f"⚠️ Connection test warning: {test_error}")
-                # Don't fail here, just warn
-            
-        except Exception as e:
-            error_msg = str(e)
-            print(f"❌ Failed to initialize InferenceClient: {error_msg}")
-            raise ValueError(f"Gagal menghubungkan ke Hugging Face API: {error_msg}")
+                
+                # If successful, use this model
+                self.model_name = model_name
+                print(f"✅ Successfully connected to: {model_name}")
+                return
+                
+            except Exception as e:
+                error_str = str(e)
+                print(f"⚠️ {model_name} test failed: {error_str[:100]}")
+                
+                # If model is loading (503), we can still use it
+                if "loading" in error_str.lower() or "503" in error_str or "unavailable" in error_str.lower():
+                    print(f"⏳ {model_name} is loading, will use on first query")
+                    self.model_name = model_name
+                    return
+                
+                continue
+        
+        # Fallback: use Zephyr anyway (most likely to work)
+        print("⚠️ No model test successful, defaulting to zephyr-7b-beta")
+        self.model_name = "HuggingFaceH4/zephyr-7b-beta"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -279,7 +298,7 @@ class ChatBot:
         return docs
 
     def _setup_rag_chain(self):
-        """Membangun RAG chain dengan Mistral chat completion."""
+        """Membangun RAG chain dengan serverless inference."""
         self.vector_store = self._initialize_chroma()
         
         if self.vector_store is None:
@@ -305,19 +324,22 @@ class ChatBot:
             return "\n\n---\n\n".join(formatted_chunks)
 
         def call_llm(inputs):
-            """Call Mistral using chat_completion (the supported method)."""
+            """Call LLM using serverless inference with model parameter."""
             
             # Truncate context
             max_context_length = 1500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             
-            print(f"\n=== Calling Mistral Chat ===")
+            # Get model name
+            model_name = getattr(self, 'model_name', 'HuggingFaceH4/zephyr-7b-beta')
+            
+            print(f"\n=== Calling {model_name} ===")
             print(f"Question: {question[:80]}...")
             print(f"Context: {len(context)} chars")
             
             try:
-                # Use chat_completion (the supported task type)
+                # Prepare messages
                 messages = [
                     {
                         "role": "system",
@@ -335,16 +357,18 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
                     }
                 ]
                 
-                print("Sending to HF API (chat_completion)...")
+                print("Sending to HF Serverless API...")
                 
+                # Call with model parameter (serverless inference)
                 response = self.hf_client.chat_completion(
                     messages=messages,
+                    model=model_name,  # Pass model as parameter
                     max_tokens=400,
                     temperature=0.7,
                     top_p=0.9
                 )
                 
-                # Extract the answer
+                # Extract answer
                 answer = response.choices[0].message.content.strip()
                 
                 print(f"✅ Response received: {len(answer)} chars")
@@ -355,16 +379,16 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
                 error_msg = str(e)
                 
                 print(f"❌ LLM Error: {error_type}")
-                print(f"Error details: {error_msg}")
-                print(f"Traceback:\n{traceback.format_exc()}")
+                print(f"Error details: {error_msg[:200]}")
+                print(f"Full traceback:\n{traceback.format_exc()}")
                 
                 # Show in debug mode
                 if st.session_state.get('debug_mode', False):
                     st.error(f"""🐛 DEBUG ERROR:
 **Type**: {error_type}
 **Message**: {error_msg[:400]}
-**Model**: mistralai/Mistral-7B-Instruct-v0.2
-**Method**: chat_completion (conversational)
+**Model**: {model_name}
+**Method**: chat_completion (serverless)
 **Token Set**: {bool(os.environ.get('HF_TOKEN'))}
 **Token Length**: {len(os.environ.get('HF_TOKEN', ''))}
                     """)
@@ -386,30 +410,26 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
         
         # Check specific error types
         if "rate" in error_lower or "429" in error_msg:
-            return """⏳ **Server AI sedang sibuk** (rate limit tercapai).
+            return """⏳ **Server AI sedang sibuk** (rate limit).
 
 **Solusi:**
-1. Tunggu 1 menit
+1. Tunggu 1-2 menit
 2. Coba lagi dengan pertanyaan lebih singkat
-3. Jika terus terjadi, coba beberapa menit lagi
-
-Server Hugging Face gratis memiliki batasan request per jam."""
+3. Server gratis memiliki batasan request per jam"""
 
         elif "401" in error_msg or "403" in error_msg or "token" in error_lower or "authentication" in error_lower:
-            return f"""🔑 **Error Autentikasi API**
+            return f"""🔑 **Error Autentikasi**
 
-**Untuk Admin:**
-Periksa HUGGINGFACE_API_KEY di Streamlit Secrets:
-1. Pastikan token valid (cek di https://huggingface.co/settings/tokens)
-2. Format: `HUGGINGFACE_API_KEY = "hf_..."`
-3. Token harus memiliki akses "read" minimal
+**Admin:** Periksa HUGGINGFACE_API_KEY di Streamlit Secrets
+- Token harus valid (cek: https://huggingface.co/settings/tokens)
+- Format: `HUGGINGFACE_API_KEY = "hf_..."`
 
-**Error detail:** {error_msg[:150]}"""
+**Error:** {error_msg[:150]}"""
 
         elif "503" in error_msg or "loading" in error_lower or "unavailable" in error_lower:
-            return """⚙️ **Model sedang loading oleh Hugging Face**
+            return """⚙️ **Model sedang loading** (cold start)
 
-Model Mistral-7B sedang di-load ke server (biasa terjadi setelah idle).
+Model sedang di-load ke server oleh Hugging Face.
 
 **Solusi:**
 1. Tunggu 30-60 detik
@@ -417,47 +437,38 @@ Model Mistral-7B sedang di-load ke server (biasa terjadi setelah idle).
 3. Biasanya berhasil pada percobaan kedua"""
 
         elif "timeout" in error_lower:
-            return """⏱️ **Timeout - Koneksi lambat**
+            return """⏱️ **Timeout**
 
 **Solusi:**
-1. Coba lagi (mungkin server sibuk)
+1. Coba lagi (server mungkin sibuk)
 2. Gunakan pertanyaan lebih singkat
-3. Periksa koneksi internet Anda"""
+3. Periksa koneksi internet"""
 
-        elif "model" in error_lower and ("not found" in error_lower or "does not exist" in error_lower):
+        elif "model" in error_lower and ("not found" in error_lower or "not supported" in error_lower):
             return f"""🤖 **Model tidak tersedia**
 
-Model `mistralai/Mistral-7B-Instruct-v0.2` tidak dapat diakses.
+**Error:** {error_msg[:200]}
 
-**Untuk Admin:** Model mungkin:
-- Tidak tersedia secara publik
+**Admin:** Model mungkin:
+- Tidak tersedia di region Anda
 - Memerlukan akses khusus
-- Nama model salah
+- Sedang maintenance
 
-**Error:** {error_msg[:200]}"""
-
-        elif "not supported" in error_lower or "task" in error_lower:
-            return f"""⚠️ **Error konfigurasi model**
-
-**Error:** {error_msg[:250]}
-
-**Untuk Admin:** Periksa task type yang didukung model.
-
-Coba lagi atau hubungi administrator."""
+Coba lagi atau hubungi admin."""
 
         else:
-            # Generic error with helpful guidance
-            return f"""❌ **Terjadi gangguan teknis**
+            # Generic error
+            return f"""❌ **Gangguan teknis**
 
 **Error:** {error_msg[:250]}
 
-**Yang bisa dilakukan:**
+**Solusi:**
 1. Coba lagi dalam beberapa saat
 2. Gunakan pertanyaan lebih sederhana
-3. Coba halaman **📚 Informasi Umum** untuk FAQ
-4. Hubungi administrator jika berlanjut
+3. Lihat halaman **📚 Informasi Umum** untuk FAQ
+4. Aktifkan **🐛 Debug Mode** untuk detail
 
-**Debug mode:** Aktifkan toggle "🐛 Debug Mode" di sidebar untuk info detail."""
+Hubungi administrator jika masalah berlanjut."""
 
     def ask(self, question: str):
         """Ask question and get answer with sources."""
@@ -474,12 +485,12 @@ Coba lagi atau hubungi administrator."""
             
             # Get answer from RAG chain
             answer = self.rag_chain.invoke(question)
-            print(f"Answer: {answer[:100]}...")
+            print(f"Answer generated: {answer[:100]}...")
             
             # Retrieve source documents
             try:
                 retrieved_docs = self.source_retriever_chain.invoke(question)
-                print(f"Retrieved {len(retrieved_docs)} sources")
+                print(f"Retrieved {len(retrieved_docs)} source documents")
                 
                 sources = []
                 source_metadata = {}

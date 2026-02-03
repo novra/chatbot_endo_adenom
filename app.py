@@ -6,9 +6,6 @@ os.environ.setdefault("STREAMLIT_SERVER_FILE_WATCHER_TYPE", "none")
 import streamlit as st
 from dotenv import load_dotenv
 
-# Ensure Streamlit runtime uses the same file watcher setting
-st.set_option("server.fileWatcherType", "none")
-
 # Konfigurasi halaman (Wajib di baris pertama)
 st.set_page_config(
     page_title="Asisten Adenomyosis",

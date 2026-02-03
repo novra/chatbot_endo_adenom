@@ -1,10 +1,16 @@
 import os
+
+# ============================================
+# FIX: Disable ChromaDB Telemetry (set before Chroma imports)
+# ============================================
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+os.environ["CHROMA_TELEMETRY_IMPL"] = "none"
+
 import fitz  # PyMuPDF
 import streamlit as st
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_chroma import Chroma
-from dotenv import load_dotenv
 from langchain_core.prompts import PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.schema.output_parser import StrOutputParser
@@ -21,8 +27,7 @@ class ChatBot:
     3. Chain-of-Thought Prompting (structured reasoning)
     """
     def __init__(self):
-        load_dotenv()
-        # Konfigurasi Database Lokal
+        # Konfigurasi Database - Menggunakan path relatif agar aman di Streamlit Cloud
         self.persist_directory = "./chroma_db_adenomyosis"
         
         # Model Embedding
@@ -33,35 +38,49 @@ class ChatBot:
         self._initialize_hf_client()
         self._setup_rag_chain()
 
+    def _initialize_hf_client(self):
+        """Menginisialisasi Hugging Face Client menggunakan Streamlit Secrets."""
+        try:
+            hf_token = st.secrets["HUGGINGFACE_API_KEY"]
+        except KeyError:
+            raise ValueError("HUGGINGFACE_API_KEY tidak ditemukan di Streamlit Secrets.")
+        
+        # Menggunakan Google Gemma 2
+        self.hf_client = InferenceClient(
+            model="google/gemma-2-2b-it",
+            token=hf_token
+        )
+
     def _initialize_chroma(self):
-        """Inisialisasi ChromaDB lokal dengan metadata filtering."""
-        if os.path.exists(self.persist_directory) and os.listdir(self.persist_directory):
+        """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
+        db_exists = os.path.exists(self.persist_directory) and \
+                    len(os.listdir(self.persist_directory)) > 0 if os.path.exists(self.persist_directory) else False
+
+        if db_exists:
             print(f"--- Memuat database Chroma dari {self.persist_directory} ---")
             return Chroma(
                 persist_directory=self.persist_directory, 
                 embedding_function=self.embeddings_model,
-                collection_metadata={"hnsw:space": "cosine"}  # Optimasi similarity search
+                collection_metadata={"hnsw:space": "cosine"}
             )
         else:
+            # Di Streamlit Cloud, pastikan folder './data_adenomyosis' sudah di-upload ke GitHub
             print("--- Database belum ditemukan. Memulai proses indexing PDF... ---")
-            st.info("Sedang membangun Database Pengetahuan dengan metadata enrichment (proses awal 1-2 menit)...")
+            st.info("Sedang membangun Database Pengetahuan (proses awal 1-2 menit)...")
             
             docs = self._load_pdfs_from_folder('./data_adenomyosis')
             if not docs:
                 st.warning("Tidak ada dokumen PDF ditemukan di folder './data_adenomyosis'.")
                 return None
             
-            # PERBAIKAN A: Semantic Chunking Strategy
-            # Chunk lebih kecil dengan overlap lebih besar untuk preservasi konteks
             text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=500,        # Lebih kecil untuk presisi
-                chunk_overlap=150,     # Overlap 30% untuk context continuity
+                chunk_size=500,
+                chunk_overlap=150,
                 length_function=len,
-                separators=["\n\n", "\n", ". ", " ", ""]  # Prioritas pemisah alami
+                separators=["\n\n", "\n", ". ", " ", ""]
             )
             split_docs = text_splitter.split_documents(docs)
             
-            # Tambahkan chunk_id untuk tracking
             for idx, doc in enumerate(split_docs):
                 doc.metadata["chunk_id"] = idx
             
@@ -71,170 +90,56 @@ class ChatBot:
                 persist_directory=self.persist_directory,
                 collection_metadata={"hnsw:space": "cosine"}
             )
-            st.success(f"✅ Database berhasil dibuat: {len(split_docs)} chunks dari {len(docs)} dokumen!")
+            st.success(f"✅ Database berhasil dibuat!")
             return vector_store
 
-    def _initialize_hf_client(self):
-        """Menginisialisasi Hugging Face Client dengan model yang support chat completion."""
-        hf_token = os.getenv('HUGGINGFACE_API_KEY')
-        if not hf_token:
-            raise ValueError("HUGGINGFACE_API_KEY tidak ditemukan di file .env")
-        
-        # Menggunakan Google Gemma 2 - Model ringan yang support chat completion
-        self.hf_client = InferenceClient(
-            model="google/gemma-2-2b-it",
-            token=hf_token
-        )
-
     def _extract_metadata_from_filename(self, filename):
-        """
-        PERBAIKAN B: Ekstraksi metadata dari nama file
-        Contoh format: "jurnal_adenomiosis_2023.pdf" atau "herbal_kunyit_artikel.pdf"
-        
-        IMPORTANT: ChromaDB tidak menerima None values, semua harus str/int/float/bool
-        """
+        """Ekstraksi metadata dari nama file PDF."""
         metadata = {
             "source": filename,
-            "category": "unknown",
-            "year": 0,  # ✅ Default 0 instead of None
-            "source_type": "unknown",
-            "validity_level": "medium"
+            "source_type": "Unknown",
+            "validity_level": "medium",
+            "year": 0,
+            "category": "general"
         }
         
+        # Extract year from filename (e.g., 2020, 2021, etc.)
+        year_match = re.search(r'(19|20)\d{2}', filename)
+        if year_match:
+            metadata["year"] = int(year_match.group())
+        
+        # Kategorisasi berdasarkan nama file
         filename_lower = filename.lower()
         
-        # Deteksi kategori dari nama file
-        if any(keyword in filename_lower for keyword in ["jurnal", "journal", "clinical", "study"]):
-            metadata["category"] = "clinical_journal"
+        # Source type detection
+        if any(keyword in filename_lower for keyword in ['jurnal', 'journal', 'paper', 'research']):
+            metadata["source_type"] = "Jurnal Ilmiah"
             metadata["validity_level"] = "high"
-            metadata["source_type"] = "Jurnal Klinis"
-        elif any(keyword in filename_lower for keyword in ["herbal", "natural", "traditional"]):
-            metadata["category"] = "herbal_medicine"
-            metadata["validity_level"] = "medium"
-            metadata["source_type"] = "Herbal/Natural Medicine"
-        elif any(keyword in filename_lower for keyword in ["guideline", "panduan", "protocol"]):
-            metadata["category"] = "clinical_guideline"
+        elif any(keyword in filename_lower for keyword in ['guideline', 'pedoman', 'clinical']):
+            metadata["source_type"] = "Guideline Klinis"
+            metadata["validity_level"] = "very_high"
+        elif any(keyword in filename_lower for keyword in ['textbook', 'buku', 'book']):
+            metadata["source_type"] = "Buku Teks"
             metadata["validity_level"] = "high"
-            metadata["source_type"] = "Panduan Klinis"
-        elif any(keyword in filename_lower for keyword in ["review", "overview", "tinjauan"]):
-            metadata["category"] = "review_article"
-            metadata["validity_level"] = "medium"
-            metadata["source_type"] = "Artikel Review"
-        else:
-            metadata["category"] = "general_article"
-            metadata["validity_level"] = "low"
-            metadata["source_type"] = "Artikel Umum"
+        elif any(keyword in filename_lower for keyword in ['review', 'tinjauan']):
+            metadata["source_type"] = "Review Article"
+            metadata["validity_level"] = "high"
         
-        # Ekstraksi tahun dari nama file (pattern: 2020-2024)
-        year_match = re.search(r'(20\d{2})', filename)
-        if year_match:
-            metadata["year"] = int(year_match.group(1))
-        # else: tetap 0 (tidak ada year di filename)
+        # Category detection
+        if any(keyword in filename_lower for keyword in ['adenomyosis', 'adenom']):
+            metadata["category"] = "adenomyosis"
+        elif any(keyword in filename_lower for keyword in ['endometriosis', 'endo']):
+            metadata["category"] = "endometriosis"
+        elif any(keyword in filename_lower for keyword in ['diagnosis', 'diagnosa', 'diagnostic']):
+            metadata["category"] = "diagnosis"
+        elif any(keyword in filename_lower for keyword in ['treatment', 'pengobatan', 'terapi', 'therapy']):
+            metadata["category"] = "treatment"
         
         return metadata
 
-    def _setup_rag_chain(self):
-        """Membangun RAG chain dengan Chain-of-Thought Prompting."""
-        self.vector_store = self._initialize_chroma()
-        
-        if self.vector_store is None:
-            self.rag_chain = None
-            return
-
-        # Retriever dengan metadata filtering (prioritas sumber high validity)
-        retriever = self.vector_store.as_retriever(
-            search_type="similarity",
-            search_kwargs={
-                'k': 5  # ✅ Reduced from 7 for better precision
-            }
-        )
-
-        def format_docs(docs):
-            """Format documents dengan metadata untuk context yang lebih kaya"""
-            formatted_chunks = []
-            for doc in docs:
-                source = doc.metadata.get("source", "Unknown")
-                source_type = doc.metadata.get("source_type", "Unknown")
-                validity = doc.metadata.get("validity_level", "unknown")
-                year = doc.metadata.get("year", "N/A")
-                
-                # Format: [Sumber: Type | Validitas | Tahun] Content
-                formatted_chunks.append(
-                    f"[Sumber: {source_type} | Validitas: {validity} | Tahun: {year}]\n{doc.page_content}"
-                )
-            return "\n\n---\n\n".join(formatted_chunks)
-
-        def call_llm(inputs):
-            try:
-                context = inputs["context"]
-                question = inputs["question"]
-                
-                # PERBAIKAN C: Chain-of-Thought Prompting
-                system_prompt = """Anda adalah Asisten Medis Ahli Ginekologi dengan spesialisasi dalam Adenomiosis dan Endometriosis.
-
-METODOLOGI ANALISIS:
-Anda WAJIB mengikuti langkah berpikir berikut sebelum menjawab:
-
-1. IDENTIFIKASI KELUHAN: Pahami pertanyaan utama pengguna
-2. ANALISIS KONTEKS: Cari bukti medis di konteks yang mendukung jawaban
-3. EVALUASI VALIDITAS: Prioritaskan sumber dengan validitas tinggi (jurnal klinis)
-4. PERTIMBANGAN HERBAL: Jika membahas herbal/natural medicine, WAJIB sebutkan:
-   - Efek samping potensial (jika ada di konteks)
-   - Interaksi obat (jika relevan)
-   - Tingkat bukti ilmiah
-5. KONSTRUKSI JAWABAN: Susun jawaban yang empatik namun objektif
-
-PRINSIP JAWABAN:
-- Gunakan HANYA informasi dari KONTEKS yang diberikan
-- Jika informasi tidak ada, katakan dengan jelas "Informasi tidak tersedia dalam database"
-- Untuk sumber validitas rendah, tambahkan disclaimer
-- Berikan penjelasan yang mudah dipahami namun tetap akurat secara medis
-- JANGAN membuat asumsi atau menambahkan informasi di luar konteks
-- SANGAT PENTING: Jawab dengan RINGKAS dan PADAT (maksimal 2-3 paragraf, sekitar 100-150 kata)
-- DILARANG KERAS mengulang kata, frasa, atau kalimat yang sama
-- Gunakan sinonim dan variasi bahasa untuk menghindari pengulangan
-- Jika sudah selesai menjawab, STOP - jangan tambahkan pengulangan atau elaborasi berlebihan"""
-
-                # User message dengan structured context
-                user_message = f"""KONTEKS DARI DATABASE MEDIS (dengan metadata validitas):
-{context}
-
-PERTANYAAN PASIEN:
-{question}
-
-Silakan jawab dengan mengikuti metodologi analisis di atas dalam BAHASA INDONESIA."""
-
-                # Chat completion API call
-                messages = [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_message}
-                ]
-                
-                response = self.hf_client.chat_completion(
-                    messages=messages,
-                    max_tokens=600,       # ✅ Reduced to prevent long outputs
-                    temperature=0.5,      # ✅ Increased for more diversity
-                    top_p=0.95,          # ✅ Higher for better sampling
-                    stop=["\n\n\n", "###", "---"]  # ✅ Stop sequences to prevent rambling
-                )
-                
-                return response.choices[0].message.content.strip()
-                
-            except Exception as e:
-                print(f"LLM Connection Error: {e}")
-                return "Maaf, sistem sedang mengalami gangguan koneksi ke server AI. Mohon coba lagi dalam beberapa saat."
-
-        self.rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
-            | RunnableLambda(call_llm)
-            | StrOutputParser()
-        )
-        
-        self.source_retriever_chain = retriever
-
     def _load_pdfs_from_folder(self, folder_path):
         """
-        PERBAIKAN B: Load PDFs dengan metadata enrichment
+        Load PDFs dengan metadata enrichment
         ChromaDB requires all metadata values to be str/int/float/bool (not None)
         """
         if not os.path.exists(folder_path):
@@ -284,6 +189,73 @@ Silakan jawab dengan mengikuti metodologi analisis di atas dalam BAHASA INDONESI
         
         return docs
 
+    def _setup_rag_chain(self):
+        """Membangun RAG chain dengan st.secrets support."""
+        self.vector_store = self._initialize_chroma()
+        
+        if self.vector_store is None:
+            self.rag_chain = None
+            return
+
+        retriever = self.vector_store.as_retriever(
+            search_type="similarity",
+            search_kwargs={'k': 5}
+        )
+
+        def format_docs(docs):
+            formatted_chunks = []
+            for doc in docs:
+                source_type = doc.metadata.get("source_type", "Unknown")
+                validity = doc.metadata.get("validity_level", "unknown")
+                year = doc.metadata.get("year", "N/A")
+                formatted_chunks.append(
+                    f"[Sumber: {source_type} | Validitas: {validity} | Tahun: {year}]\n{doc.page_content}"
+                )
+            return "\n\n---\n\n".join(formatted_chunks)
+
+        def call_llm(inputs):
+            try:
+                system_prompt = """Anda adalah Asisten Medis Ahli Ginekologi yang berspesialisasi dalam adenomyosis dan endometriosis.
+
+PERAN ANDA:
+- Memberikan informasi medis yang akurat berdasarkan literatur ilmiah
+- Menjelaskan kondisi medis dengan bahasa yang mudah dipahami
+- Selalu menekankan pentingnya konsultasi dengan dokter
+
+CARA MENJAWAB:
+1. Analisis konteks yang diberikan dengan teliti
+2. Berikan jawaban yang jelas dan terstruktur
+3. Jika informasi tidak cukup, sampaikan dengan jujur
+4. Selalu akhiri dengan anjuran konsultasi medis profesional
+
+BATASAN:
+- Tidak memberikan diagnosis medis
+- Tidak meresepkan obat
+- Tidak menggantikan konsultasi dokter
+- Fokus pada edukasi dan informasi umum
+
+Jawab dalam Bahasa Indonesia yang baik dan profesional."""
+
+                response = self.hf_client.chat_completion(
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"KONTEKS: {inputs['context']}\n\nPERTANYAAN: {inputs['question']}"}
+                    ],
+                    max_tokens=600,
+                    temperature=0.5,
+                    top_p=0.95
+                )
+                return response.choices[0].message.content.strip()
+            except Exception as e:
+                return f"Maaf, terjadi gangguan koneksi ke server AI. Silakan coba lagi dalam beberapa saat."
+
+        self.rag_chain = (
+            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            | RunnableLambda(call_llm)
+            | StrOutputParser()
+        )
+        self.source_retriever_chain = retriever
+
     def ask(self, question: str):
         """
         Enhanced ask method dengan metadata tracking dan error handling
@@ -324,7 +296,6 @@ Silakan jawab dengan mengikuti metodologi analisis di atas dalam BAHASA INDONESI
                         }
             except Exception as retrieval_error:
                 print(f"Source Retrieval Warning: {retrieval_error}")
-                # Fallback: no sources
                 sources = []
                 source_metadata = {}
             
@@ -338,7 +309,6 @@ Silakan jawab dengan mengikuti metodologi analisis di atas dalam BAHASA INDONESI
             error_msg = str(e)
             print(f"RAG Error: {error_msg}")
             
-            # Provide helpful error message
             if "fetch_k" in error_msg:
                 return {
                     "answer": "Terjadi error konfigurasi. Mohon gunakan file chatbot_improved.py versi terbaru.",

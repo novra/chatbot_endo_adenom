@@ -14,3 +14,4 @@ transformers
 sentence-transformers
 pymupdf
 python-dotenv
+protobuf==3.20.*

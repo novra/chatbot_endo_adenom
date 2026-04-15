@@ -331,7 +331,7 @@ class ChatBot:
             question = inputs['question']
             
             # Get model name
-            model_name = getattr(self, 'model_name', 'HuggingFaceH4/zephyr-7b-beta')
+            model_name = getattr(self, 'model_name', 'meta-llama/Meta-Llama-3-8B-Instruct')
             
             print(f"\n=== Calling {model_name} ===")
             print(f"Question: {question[:80]}...")

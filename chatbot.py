@@ -133,8 +133,8 @@ class ChatBot:
                 continue
         
         # Fallback: use Zephyr anyway (most likely to work)
-        print("⚠️ No model test successful, defaulting to zephyr-7b-beta")
-        self.model_name = "HuggingFaceH4/zephyr-7b-beta"
+        print("⚠️ No model test successful, defaulting to meta-llama/Meta-Llama-3-8B-Instruct")
+        self.model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""

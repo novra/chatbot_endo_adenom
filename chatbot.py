@@ -2,6 +2,9 @@ import os
 import sqlite3
 import shutil
 from pathlib import Path
+import re
+from datetime import datetime
+import traceback
 
 # ============================================
 # FIX: Disable ChromaDB Telemetry (set before Chroma imports)
@@ -20,9 +23,6 @@ from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.schema.output_parser import StrOutputParser
 from langchain_core.documents import Document
 from huggingface_hub import InferenceClient
-import re
-from datetime import datetime
-import traceback
 
 class ChatBot:
     """
@@ -31,7 +31,7 @@ class ChatBot:
     2. Metadata Filtering (kategori sumber, tahun, validitas)
     3. Enhanced error handling dan logging
     4. Proper HF token authentication
-    5. Multiple model fallback strategy
+    5. Dynamic Multiple model fallback strategy (FIXED)
     """
     def __init__(self):
         # Konfigurasi Database
@@ -74,42 +74,42 @@ class ChatBot:
         return "./chroma_db_adenomyosis"
 
     def _initialize_hf_client(self):
-        """Menginisialisasi Hugging Face Client dengan fallback models."""
+        """Menginisialisasi Hugging Face Client dengan fallback models yang kuat."""
         try:
-            hf_token = st.secrets["HUGGINGFACE_API_KEY"]
+            # Dukung HF_TOKEN atau HUGGINGFACE_API_KEY
+            hf_token = st.secrets.get("HUGGINGFACE_API_KEY") or st.secrets.get("HF_TOKEN")
             if not hf_token or len(hf_token) < 10:
-                raise ValueError("Token HuggingFace tidak valid")
+                raise ValueError("Token HuggingFace tidak valid atau tidak ditemukan")
             
             # SET ENVIRONMENT VARIABLES for HuggingFace Hub
             os.environ["HF_TOKEN"] = hf_token
             os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
-            os.environ["HUGGING_FACE_HUB_TOKEN"] = hf_token
             
             print(f"✅ HF token set in environment")
             print(f"Token preview: {hf_token[:15]}... (length: {len(hf_token)})")
             
-        except KeyError:
-            raise ValueError("❌ HUGGINGFACE_API_KEY tidak ditemukan di Streamlit Secrets.")
         except Exception as e:
             raise ValueError(f"❌ Error loading HF token: {e}")
         
-        # Initialize InferenceClient (without specifying model - use serverless)
+        # Initialize InferenceClient
         self.hf_client = InferenceClient(token=hf_token, timeout=60)
         print("✅ InferenceClient initialized for serverless inference")
         
-        # Try models in order (these work on free tier serverless API)
+        # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
         models_to_try = [
-            "mistralai/Mixtral-8x7B-Instruct-v0.1",  # Powerful
-            "meta-llama/Meta-Llama-3-8B-Instruct",   # Alternative
-            "microsoft/Phi-3-mini-4k-instruct",      # Lightweight
+            "meta-llama/Meta-Llama-3.1-8B-Instruct",    # Pilihan utama, performa baik
+            "mistralai/Mistral-7B-Instruct-v0.3",       # Sangat stabil di serverless
+            "HuggingFaceH4/zephyr-7b-beta",             # Model ringan yang hampir selalu up
+            "microsoft/Phi-3-mini-4k-instruct"
         ]
+        
+        self.model_name = None
         
         for model_name in models_to_try:
             try:
                 print(f"🔄 Testing model: {model_name}")
-                
                 # Test the model with a simple query
-                test_response = self.hf_client.chat_completion(
+                self.hf_client.chat_completion(
                     messages=[{"role": "user", "content": "Hi"}],
                     model=model_name,
                     max_tokens=3
@@ -121,20 +121,22 @@ class ChatBot:
                 return
                 
             except Exception as e:
-                error_str = str(e)
-                print(f"⚠️ {model_name} test failed: {error_str[:100]}")
+                error_str = str(e).lower()
+                print(f"⚠️ {model_name} test failed: {str(e)[:100]}")
                 
-                # If model is loading (503), we can still use it
-                if "loading" in error_str.lower() or "503" in error_str or "unavailable" in error_str.lower():
+                # JIKA model loading, kita tetap pilih model ini karena sebentar lagi akan siap
+                if "loading" in error_str or "503" in error_str or "unavailable" in error_str:
                     print(f"⏳ {model_name} is loading, will use on first query")
                     self.model_name = model_name
                     return
                 
+                # JIKA model tidak disupport, biarkan loop berjalan ke model berikutnya
                 continue
         
-        # Fallback: use Zephyr anyway (most likely to work)
-        print("⚠️ No model test successful, defaulting to meta-llama/Meta-Llama-3-8B-Instruct")
-        self.model_name = "meta-llama/Meta-Llama-3-8B-Instruct"
+        # Fallback terakhir jika semua gagal tapi tidak crash
+        if not self.model_name:
+            print("⚠️ No model test successful, defaulting to Zephyr")
+            self.model_name = "HuggingFaceH4/zephyr-7b-beta"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -153,10 +155,7 @@ class ChatBot:
                 return vector_store
             except sqlite3.OperationalError as e:
                 print(f"⚠️ Database error: {e}")
-                st.warning(
-                    "Database Chroma bermasalah atau skema tidak kompatibel. "
-                    "Akan dibuat ulang dari folder data."
-                )
+                st.warning("Database Chroma bermasalah atau skema tidak kompatibel. Akan dibuat ulang dari folder data.")
                 try:
                     shutil.rmtree(self.persist_directory)
                     print("🗑️ Old database removed")
@@ -264,10 +263,8 @@ class ChatBot:
                         metadata["page_count"] = len(doc)
                         metadata["indexed_at"] = datetime.now().isoformat()
                         
-                        # Filter None values
+                        # Filter None values and Ensure proper types
                         metadata = {k: v for k, v in metadata.items() if v is not None}
-                        
-                        # Ensure proper types
                         for key, value in metadata.items():
                             if not isinstance(value, (str, int, float, bool)):
                                 metadata[key] = str(value)
@@ -323,17 +320,13 @@ class ChatBot:
             return "\n\n---\n\n".join(formatted_chunks)
 
         def call_llm(inputs):
-            """Call LLM using serverless inference with model parameter."""
-            
+            """Call LLM using serverless inference with dynamic model parameter."""
             # Truncate context
             max_context_length = 1500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             
-            # Get model name
-            model_name = getattr(self, 'model_name', 'meta-llama/Meta-Llama-3-8B-Instruct')
-            
-            print(f"\n=== Calling {model_name} ===")
+            print(f"\n=== Calling {self.model_name} ===")
             print(f"Question: {question[:80]}...")
             print(f"Context: {len(context)} chars")
             
@@ -346,22 +339,16 @@ class ChatBot:
                     },
                     {
                         "role": "user",
-                        "content": f"""Berdasarkan informasi medis berikut:
-
-{context}
-
-Pertanyaan pasien: {question}
-
-Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsultasi dokter spesialis."""
+                        "content": f"Berdasarkan informasi medis berikut:\n\n{context}\n\nPertanyaan pasien: {question}\n\nJawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsultasi dokter spesialis."
                     }
                 ]
                 
                 print("Sending to HF Serverless API...")
                 
-                # Call with model parameter (serverless inference)
+                # Call with model parameter
                 response = self.hf_client.chat_completion(
                     messages=messages,
-                    model=model_name,  # Pass model as parameter
+                    model=self.model_name,
                     max_tokens=400,
                     temperature=0.7,
                     top_p=0.9
@@ -369,7 +356,6 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
                 
                 # Extract answer
                 answer = response.choices[0].message.content.strip()
-                
                 print(f"✅ Response received: {len(answer)} chars")
                 return answer
                 
@@ -383,14 +369,7 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
                 
                 # Show in debug mode
                 if st.session_state.get('debug_mode', False):
-                    st.error(f"""🐛 DEBUG ERROR:
-**Type**: {error_type}
-**Message**: {error_msg[:400]}
-**Model**: {model_name}
-**Method**: chat_completion (serverless)
-**Token Set**: {bool(os.environ.get('HF_TOKEN'))}
-**Token Length**: {len(os.environ.get('HF_TOKEN', ''))}
-                    """)
+                    st.error(f"🐛 DEBUG ERROR:\nType: {error_type}\nMessage: {error_msg[:400]}\nModel: {self.model_name}")
                 
                 return self._generate_fallback_response(question, error_msg)
 
@@ -404,70 +383,25 @@ Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsul
 
     def _generate_fallback_response(self, question, error_msg):
         """Generate helpful fallback response when LLM fails."""
-        
         error_lower = error_msg.lower()
         
-        # Check specific error types
         if "rate" in error_lower or "429" in error_msg:
-            return """⏳ **Server AI sedang sibuk** (rate limit).
-
-**Solusi:**
-1. Tunggu 1-2 menit
-2. Coba lagi dengan pertanyaan lebih singkat
-3. Server gratis memiliki batasan request per jam"""
+            return "⏳ **Server AI sedang sibuk** (rate limit).\n\n**Solusi:**\n1. Tunggu 1-2 menit\n2. Coba lagi dengan pertanyaan lebih singkat\n3. Server gratis memiliki batasan request per jam"
 
         elif "401" in error_msg or "403" in error_msg or "token" in error_lower or "authentication" in error_lower:
-            return f"""🔑 **Error Autentikasi**
-
-**Admin:** Periksa HUGGINGFACE_API_KEY di Streamlit Secrets
-- Token harus valid (cek: https://huggingface.co/settings/tokens)
-- Format: `HUGGINGFACE_API_KEY = "hf_..."`
-
-**Error:** {error_msg[:150]}"""
+            return f"🔑 **Error Autentikasi**\n\n**Admin:** Periksa HUGGINGFACE_API_KEY di Streamlit Secrets\n- Token harus valid\n\n**Error:** {error_msg[:150]}"
 
         elif "503" in error_msg or "loading" in error_lower or "unavailable" in error_lower:
-            return """⚙️ **Model sedang loading** (cold start)
-
-Model sedang di-load ke server oleh Hugging Face.
-
-**Solusi:**
-1. Tunggu 30-60 detik
-2. Coba lagi
-3. Biasanya berhasil pada percobaan kedua"""
+            return "⚙️ **Model sedang loading** (cold start)\n\nModel sedang di-load ke server oleh Hugging Face.\n\n**Solusi:**\n1. Tunggu 30-60 detik\n2. Coba lagi\n3. Biasanya berhasil pada percobaan kedua"
 
         elif "timeout" in error_lower:
-            return """⏱️ **Timeout**
-
-**Solusi:**
-1. Coba lagi (server mungkin sibuk)
-2. Gunakan pertanyaan lebih singkat
-3. Periksa koneksi internet"""
+            return "⏱️ **Timeout**\n\n**Solusi:**\n1. Coba lagi (server mungkin sibuk)\n2. Gunakan pertanyaan lebih singkat\n3. Periksa koneksi internet"
 
         elif "model" in error_lower and ("not found" in error_lower or "not supported" in error_lower):
-            return f"""🤖 **Model tidak tersedia**
-
-**Error:** {error_msg[:200]}
-
-**Admin:** Model mungkin:
-- Tidak tersedia di region Anda
-- Memerlukan akses khusus
-- Sedang maintenance
-
-Coba lagi atau hubungi admin."""
+            return f"🤖 **Model tidak tersedia**\n\n**Error:** {error_msg[:200]}\n\n**Admin:** Model mungkin tidak didukung di infrastruktur serverless saat ini. Sistem telah mencoba mengganti model otomatis tetapi gagal."
 
         else:
-            # Generic error
-            return f"""❌ **Gangguan teknis**
-
-**Error:** {error_msg[:250]}
-
-**Solusi:**
-1. Coba lagi dalam beberapa saat
-2. Gunakan pertanyaan lebih sederhana
-3. Lihat halaman **📚 Informasi Umum** untuk FAQ
-4. Aktifkan **🐛 Debug Mode** untuk detail
-
-Hubungi administrator jika masalah berlanjut."""
+            return f"❌ **Gangguan teknis**\n\n**Error:** {error_msg[:250]}\n\n**Solusi:** Coba lagi dalam beberapa saat. Hubungi administrator jika masalah berlanjut."
 
     def ask(self, question: str):
         """Ask question and get answer with sources."""
@@ -482,11 +416,9 @@ Hubungi administrator jika masalah berlanjut."""
             print(f"\n{'='*50}")
             print(f"Question: {question}")
             
-            # Get answer from RAG chain
             answer = self.rag_chain.invoke(question)
             print(f"Answer generated: {answer[:100]}...")
             
-            # Retrieve source documents
             try:
                 retrieved_docs = self.source_retriever_chain.invoke(question)
                 print(f"Retrieved {len(retrieved_docs)} source documents")

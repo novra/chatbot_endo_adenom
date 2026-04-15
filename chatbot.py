@@ -99,7 +99,6 @@ class ChatBot:
         
         # Try models in order (these work on free tier serverless API)
         models_to_try = [
-            "HuggingFaceH4/zephyr-7b-beta",          # Fast, reliable, free
             "mistralai/Mixtral-8x7B-Instruct-v0.1",  # Powerful
             "meta-llama/Meta-Llama-3-8B-Instruct",   # Alternative
             "microsoft/Phi-3-mini-4k-instruct",      # Lightweight

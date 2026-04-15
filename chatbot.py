@@ -97,10 +97,10 @@ class ChatBot:
         
         # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
         models_to_try = [
-            "meta-llama/Meta-Llama-3.1-8B-Instruct",    # Pilihan utama, performa baik
-            "mistralai/Mistral-7B-Instruct-v0.3",       # Sangat stabil di serverless
-            "HuggingFaceH4/zephyr-7b-beta",             # Model ringan yang hampir selalu up
-            "microsoft/Phi-3-mini-4k-instruct"
+            "Qwen/Qwen2.5-7B-Instruct",          # Sangat stabil dan cerdas berbahasa Indonesia
+            "google/gemma-2-9b-it",              # Native support dari Google di ekosistem HF
+            "microsoft/Phi-3.5-mini-instruct",   # Ringan dan hampir selalu tersedia
+            "meta-llama/Llama-3.2-1B-Instruct"   # Versi Llama terkecil yang lebih diizinkan
         ]
         
         self.model_name = None
@@ -135,8 +135,8 @@ class ChatBot:
         
         # Fallback terakhir jika semua gagal tapi tidak crash
         if not self.model_name:
-            print("⚠️ No model test successful, defaulting to Zephyr")
-            self.model_name = "HuggingFaceH4/zephyr-7b-beta"
+            print("⚠️ No model test successful, defaulting to Qwen")
+            self.model_name = "Qwen/Qwen2.5-7B-Instruct"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""

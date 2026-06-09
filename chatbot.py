@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v3"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v4"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -69,6 +69,13 @@ class ChatBot:
         "herbal", "alami", "tradisional", "jamu", "rempah", "tanaman obat",
         "fitoterapi", "suplemen", "komplementer", "non farmakologis",
         "non-farmakologis",
+    )
+
+    FOLLOW_UP_PATTERNS = (
+        r"\bapa\s+itu\s+(.+?)(?:\?|$)",
+        r"\bapa\s+maksud(?:nya)?\s+(.+?)(?:\?|$)",
+        r"\bjelaskan\s+(.+?)(?:\?|$)",
+        r"\bmaksud\s+(.+?)\s+apa(?:\?|$)",
     )
 
     def __init__(self):
@@ -345,6 +352,20 @@ class ChatBot:
             "endometriosis adenomyosis"
         )
 
+    def _build_contextual_question(self, question: str, chat_history=None) -> str:
+        if not self._is_contextual_follow_up(question, chat_history):
+            return question
+
+        term = self._extract_follow_up_term(question)
+        history_text = self._history_text(chat_history)
+        context_excerpt = history_text[-900:]
+        return (
+            f"{question}\n\n"
+            f"Konteks percakapan sebelumnya menyebut istilah '{term}' dalam pembahasan "
+            f"endometriosis/adenomyosis dan herbal/komplementer. Ringkasan konteks: "
+            f"{context_excerpt}"
+        )
+
     def _setup_rag_chain(self):
         """Membangun RAG chain dengan serverless inference."""
         self.vector_store = self._initialize_chroma()
@@ -388,6 +409,15 @@ class ChatBot:
                     "keamanan, bukan sebagai jawaban utama. Jelaskan bahwa herbal tidak "
                     "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter."
                 )
+            follow_up_instruction = ""
+            if self._extract_follow_up_term(question):
+                follow_up_instruction = (
+                    "Pertanyaan ini mungkin meminta klarifikasi istilah dari percakapan sebelumnya. "
+                    "Jelaskan istilah tersebut hanya berdasarkan konteks yang tersedia. Jika istilah "
+                    "tidak dikenal secara medis/herbal atau tampak salah tulis, katakan dengan jelas "
+                    "bahwa istilah tersebut tidak dapat dipastikan, lalu minta pengguna mengonfirmasi "
+                    "nama herbal/istilah yang dimaksud."
+                )
             
             print(f"\n=== Calling {self.model_name} ===")
             print(f"Question: {question[:80]}...")
@@ -407,7 +437,10 @@ class ChatBot:
                             "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
                             "Hormati intent pengguna: jika pengguna bertanya tentang herbal atau pendekatan "
                             "alami, fokuskan jawaban pada pilihan herbal/komplementer, manfaat potensial "
-                            "untuk gejala, batas bukti, dan keamanan."
+                            "untuk gejala, batas bukti, dan keamanan. Jika pengguna menanyakan istilah "
+                            "yang muncul pada jawaban sebelumnya tetapi istilah itu tidak jelas atau tidak "
+                            "didukung konteks sumber, akui ketidakpastian dan jelaskan kemungkinan salah "
+                            "tulis/istilah tidak umum; jangan membuat klaim manfaat baru."
                         )
                     },
                     {
@@ -416,6 +449,7 @@ class ChatBot:
                             f"Berdasarkan informasi medis berikut:\n\n{context}\n\n"
                             f"Pertanyaan pengguna: {question}\n\n"
                             f"{herbal_instruction}\n\n"
+                            f"{follow_up_instruction}\n\n"
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
@@ -496,6 +530,40 @@ class ChatBot:
     def _contains_any_keyword(self, text: str, keywords) -> bool:
         return any(keyword in text for keyword in keywords)
 
+    def _extract_follow_up_term(self, question: str) -> str:
+        normalized_question = self._normalize_question(question)
+        for pattern in self.FOLLOW_UP_PATTERNS:
+            match = re.search(pattern, normalized_question)
+            if match:
+                term = match.group(1).strip(" .,:;!?")
+                term = re.sub(r"^(tentang|mengenai|soal)\s+", "", term)
+                return term.strip()
+        return ""
+
+    def _history_text(self, chat_history) -> str:
+        if not chat_history:
+            return ""
+
+        parts = []
+        for message in chat_history[-6:]:
+            if not isinstance(message, dict):
+                continue
+            content = message.get("content", "")
+            if content:
+                parts.append(str(content))
+        return self._normalize_question(" ".join(parts))
+
+    def _is_contextual_follow_up(self, question: str, chat_history=None) -> bool:
+        term = self._extract_follow_up_term(question)
+        if len(term) < 3:
+            return False
+
+        history_text = self._history_text(chat_history)
+        if not history_text or term not in history_text:
+            return False
+
+        return self._is_in_medical_scope(history_text)
+
     def _is_in_medical_scope(self, question: str) -> bool:
         """
         Guardrail: only allow adenomyosis/endometriosis questions and closely
@@ -521,9 +589,11 @@ class ChatBot:
 
         return has_condition or (has_gynecology_context and has_care_context)
 
-    def ask(self, question: str):
+    def ask(self, question: str, chat_history=None):
         """Ask question and get answer with sources."""
-        if not self._is_in_medical_scope(question):
+        contextual_question = self._build_contextual_question(question, chat_history)
+
+        if not self._is_in_medical_scope(question) and contextual_question == question:
             print("Guardrail blocked out-of-scope question")
             return {
                 "answer": self.SCOPE_REJECTION_MESSAGE,
@@ -542,18 +612,20 @@ class ChatBot:
                 "sources": [],
                 "metadata": {}
             }
-        
+
         try:
             print(f"\n{'='*50}")
             print(f"Question: {question}")
-            
-            answer = self.rag_chain.invoke(question)
+
+            answer = self.rag_chain.invoke(contextual_question)
             print(f"Answer generated: {answer[:100]}...")
-            
+
             try:
-                retrieved_docs = self.source_retriever_chain.invoke(question)
+                retrieved_docs = self.source_retriever_chain.invoke(
+                    self._build_retrieval_query(contextual_question)
+                )
                 print(f"Retrieved {len(retrieved_docs)} source documents")
-                
+
                 sources = []
                 source_metadata = {}
                 

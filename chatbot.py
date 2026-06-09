@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v5"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v6"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -86,6 +86,13 @@ class ChatBot:
         "zingiber officinale": "jahe",
         "panax ginseng": "ginseng",
     }
+
+    HERBAL_CONTEXT_KEYWORDS = (
+        "herbal", "jamu", "phaleria", "macrocarpa", "mahkota", "flavonoid",
+        "curcumin", "curcuma", "kunyit", "ginseng", "anti-inflammatory",
+        "anti inflamasi", "antioxidant", "antioksidan", "il-17", "nyeri",
+        "dismenore", "inflammation", "endometriosis",
+    )
 
     def __init__(self):
         # Konfigurasi Database
@@ -355,11 +362,20 @@ class ChatBot:
         if not self._is_herbal_intent(question):
             return question
 
+        normalized_question = self._normalize_question(question)
+        condition_terms = []
+        if "endometriosis" in normalized_question:
+            condition_terms.append("endometriosis")
+        if "adenomyosis" in normalized_question or "adenomiosis" in normalized_question:
+            condition_terms.append("adenomyosis adenomiosis")
+        if not condition_terms:
+            condition_terms.append("endometriosis adenomyosis")
+
         return (
             f"{question} herbal alami tradisional jamu fitoterapi suplemen "
             "anti inflamasi pereda nyeri nyeri haid dismenore keseimbangan hormon "
             "mahkota dewa phaleria macrocarpa flavonoid il-17a anti-inflammatory "
-            "antioxidant endometriosis adenomyosis"
+            f"antioxidant {' '.join(condition_terms)}"
         )
 
     def _build_contextual_question(self, question: str, chat_history=None) -> str:
@@ -390,6 +406,42 @@ class ChatBot:
         alias_text = ", ".join(aliases)
         return f"Catatan istilah herbal: {alias_text}. Gunakan nama Indonesia ini saat menjawab."
 
+    def _doc_context_priority(self, doc, question: str) -> int:
+        source = doc.metadata.get("source", "")
+        searchable_text = self._normalize_question(f"{source} {doc.page_content}")
+        score = 0
+
+        if self._is_herbal_intent(question):
+            score += sum(3 for keyword in self.HERBAL_CONTEXT_KEYWORDS if keyword in searchable_text)
+            if "mahkota" in searchable_text or "phaleria macrocarpa" in searchable_text:
+                score += 20
+            if "endometriosis" in searchable_text:
+                score += 8
+            if "adenomyosis" in searchable_text and "endometriosis" not in searchable_text:
+                score -= 4
+            if "operative" in searchable_text or "surgery" in searchable_text:
+                score -= 8
+
+        return score
+
+    def _trim_doc_text(self, text: str, question: str, max_chars: int = 900) -> str:
+        compact_text = re.sub(r"\s+", " ", text).strip()
+        if len(compact_text) <= max_chars:
+            return compact_text
+
+        if self._is_herbal_intent(question):
+            lowered = compact_text.lower()
+            keyword_positions = [
+                lowered.find(keyword)
+                for keyword in self.HERBAL_CONTEXT_KEYWORDS
+                if lowered.find(keyword) >= 0
+            ]
+            if keyword_positions:
+                start = max(0, min(keyword_positions) - 250)
+                return compact_text[start:start + max_chars].strip()
+
+        return compact_text[:max_chars].strip()
+
     def _setup_rag_chain(self):
         """Membangun RAG chain dengan serverless inference."""
         self.vector_store = self._initialize_chroma()
@@ -405,9 +457,15 @@ class ChatBot:
         )
         print("✅ Retriever configured")
 
-        def format_docs(docs):
+        def format_docs(docs, question):
             formatted_chunks = []
-            for doc in docs:
+            sorted_docs = sorted(
+                docs,
+                key=lambda doc: self._doc_context_priority(doc, question),
+                reverse=True,
+            )
+
+            for doc in sorted_docs:
                 source = doc.metadata.get("source", "Unknown")
                 source_type = doc.metadata.get("source_type", "Unknown")
                 validity = doc.metadata.get("validity_level", "unknown")
@@ -415,16 +473,29 @@ class ChatBot:
                 category = doc.metadata.get("category", "unknown")
                 alias_note = self._herbal_alias_note(doc.page_content, source)
                 alias_line = f"\n{alias_note}" if alias_note else ""
+                doc_text = self._trim_doc_text(doc.page_content, question)
                 formatted_chunks.append(
                     f"[File: {source} | Sumber: {source_type} | Validitas: {validity} | "
-                    f"Tahun: {year} | Kategori: {category}]{alias_line}\n{doc.page_content}"
+                    f"Tahun: {year} | Kategori: {category}]{alias_line}\n{doc_text}"
                 )
             return "\n\n---\n\n".join(formatted_chunks)
+
+        def retrieve_and_format(question):
+            retrieval_query = self._build_retrieval_query(question)
+            docs = retriever.invoke(retrieval_query)
+            print("\n=== Retrieved context chunks ===")
+            for idx, doc in enumerate(docs, 1):
+                source = doc.metadata.get("source", "Unknown")
+                chunk_id = doc.metadata.get("chunk_id", "N/A")
+                priority = self._doc_context_priority(doc, question)
+                preview = self._trim_doc_text(doc.page_content, question, max_chars=180)
+                print(f"{idx}. {source} | chunk={chunk_id} | priority={priority} | {preview}")
+            return format_docs(docs, question)
 
         def call_llm(inputs):
             """Call LLM using serverless inference with dynamic model parameter."""
             # Truncate context
-            max_context_length = 3000
+            max_context_length = 6500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             herbal_instruction = ""
@@ -436,7 +507,10 @@ class ChatBot:
                     "didukung konteks. Jangan menjadikan obat farmakologis sebagai fokus "
                     "utama; sebutkan terapi medis standar hanya singkat sebagai batas "
                     "keamanan, bukan sebagai jawaban utama. Jelaskan bahwa herbal tidak "
-                    "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter."
+                    "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter. "
+                    "Jika beberapa sumber herbal relevan tersedia, sebutkan masing-masing "
+                    "herbal, nama ilmiah bila ada, mekanisme/gejala yang dituju, dan batas "
+                    "buktinya."
                 )
             follow_up_instruction = ""
             if self._extract_follow_up_term(question):
@@ -486,7 +560,9 @@ class ChatBot:
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
                             "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain. "
-                            "Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
+                            "Untuk pertanyaan herbal, jawab lebih lengkap dalam beberapa poin terstruktur "
+                            "berdasarkan sumber yang relevan. Untuk pertanyaan non-herbal, jawab dalam "
+                            "2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
                             "untuk konsultasi dokter spesialis."
                         )
                     }
@@ -498,7 +574,7 @@ class ChatBot:
                 response = self.hf_client.chat_completion(
                     messages=messages,
                     model=self.model_name,
-                    max_tokens=400,
+                    max_tokens=750,
                     temperature=0.7,
                     top_p=0.9
                 )
@@ -524,7 +600,7 @@ class ChatBot:
 
         self.rag_chain = (
             {
-                "context": RunnableLambda(self._build_retrieval_query) | retriever | format_docs,
+                "context": RunnableLambda(retrieve_and_format),
                 "question": RunnablePassthrough(),
             }
             | RunnableLambda(call_llm)

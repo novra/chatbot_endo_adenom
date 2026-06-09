@@ -33,6 +33,8 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v2"
+
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
         "adenomiosis/adenomyosis, serta gejala, diagnosis, perawatan, "
@@ -51,8 +53,7 @@ class ChatBot:
         "ovarium", "indung telur", "tuba", "haid", "menstruasi", "mens",
         "nyeri haid", "dismenore", "perdarahan menstruasi", "menorrhagia",
         "nyeri panggul", "infertil", "infertilitas", "kesuburan", "hamil",
-        "kehamilan", "keguguran", "histerektomi", "laparoskopi", "usg",
-        "mri", "iud", "hormon", "gnrh",
+        "kehamilan", "keguguran", "histerektomi", "laparoskopi", "iud", "gnrh",
     )
 
     CARE_SCOPE_KEYWORDS = (
@@ -366,11 +367,25 @@ class ChatBot:
                 messages = [
                     {
                         "role": "system",
-                        "content": "Anda adalah asisten medis yang ahli dalam adenomyosis dan endometriosis. Jawab dalam Bahasa Indonesia dengan jelas dan profesional."
+                        "content": (
+                            "Anda adalah asisten edukasi medis yang hanya membahas adenomyosis "
+                            "dan endometriosis. Jawab dalam Bahasa Indonesia dengan jelas dan "
+                            "profesional. Jangan menebak atau menyatakan bahwa pengguna memiliki "
+                            "diagnosis, kondisi, tingkat keparahan, atau kebutuhan pengobatan tertentu "
+                            "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
+                            "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis."
+                        )
                     },
                     {
                         "role": "user",
-                        "content": f"Berdasarkan informasi medis berikut:\n\n{context}\n\nPertanyaan pasien: {question}\n\nJawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran untuk konsultasi dokter spesialis."
+                        "content": (
+                            f"Berdasarkan informasi medis berikut:\n\n{context}\n\n"
+                            f"Pertanyaan pengguna: {question}\n\n"
+                            "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
+                            "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
+                            "Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
+                            "untuk konsultasi dokter spesialis."
+                        )
                     }
                 ]
                 

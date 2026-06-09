@@ -22,7 +22,7 @@ from common_questions import COMMON_QUESTIONS
 
 # Inisialisasi ChatBot dengan caching
 @st.cache_resource
-def get_chatbot():
+def get_chatbot(guardrail_version: str):
     """Menginisialisasi dan mengembalikan instance ChatBot."""
     try:
         bot = ChatBot()
@@ -31,7 +31,7 @@ def get_chatbot():
         st.error(f"Error Inisialisasi: {e}. Mohon periksa file .env Anda.")
         return None
 
-bot = get_chatbot()
+bot = get_chatbot(ChatBot.GUARDRAIL_VERSION)
 
 # Inisialisasi session state
 initialize_session_state()

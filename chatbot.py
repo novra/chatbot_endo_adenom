@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v4"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v5"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -77,6 +77,15 @@ class ChatBot:
         r"\bjelaskan\s+(.+?)(?:\?|$)",
         r"\bmaksud\s+(.+?)\s+apa(?:\?|$)",
     )
+
+    HERBAL_TERM_ALIASES = {
+        "phaleria macrocarpa": "mahkota dewa",
+        "mahkota_dewa": "mahkota dewa",
+        "curcuma longa": "kunyit",
+        "curcumin": "kurkumin/kunyit",
+        "zingiber officinale": "jahe",
+        "panax ginseng": "ginseng",
+    }
 
     def __init__(self):
         # Konfigurasi Database
@@ -349,7 +358,8 @@ class ChatBot:
         return (
             f"{question} herbal alami tradisional jamu fitoterapi suplemen "
             "anti inflamasi pereda nyeri nyeri haid dismenore keseimbangan hormon "
-            "endometriosis adenomyosis"
+            "mahkota dewa phaleria macrocarpa flavonoid il-17a anti-inflammatory "
+            "antioxidant endometriosis adenomyosis"
         )
 
     def _build_contextual_question(self, question: str, chat_history=None) -> str:
@@ -366,6 +376,20 @@ class ChatBot:
             f"{context_excerpt}"
         )
 
+    def _herbal_alias_note(self, text: str, source_name: str = "") -> str:
+        searchable_text = self._normalize_question(f"{source_name} {text}")
+        aliases = []
+
+        for source_term, indonesian_term in self.HERBAL_TERM_ALIASES.items():
+            if source_term in searchable_text and indonesian_term not in aliases:
+                aliases.append(indonesian_term)
+
+        if not aliases:
+            return ""
+
+        alias_text = ", ".join(aliases)
+        return f"Catatan istilah herbal: {alias_text}. Gunakan nama Indonesia ini saat menjawab."
+
     def _setup_rag_chain(self):
         """Membangun RAG chain dengan serverless inference."""
         self.vector_store = self._initialize_chroma()
@@ -377,25 +401,30 @@ class ChatBot:
 
         retriever = self.vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={'k': 5}
+            search_kwargs={'k': 8}
         )
         print("✅ Retriever configured")
 
         def format_docs(docs):
             formatted_chunks = []
             for doc in docs:
+                source = doc.metadata.get("source", "Unknown")
                 source_type = doc.metadata.get("source_type", "Unknown")
                 validity = doc.metadata.get("validity_level", "unknown")
                 year = doc.metadata.get("year", "N/A")
+                category = doc.metadata.get("category", "unknown")
+                alias_note = self._herbal_alias_note(doc.page_content, source)
+                alias_line = f"\n{alias_note}" if alias_note else ""
                 formatted_chunks.append(
-                    f"[Sumber: {source_type} | Validitas: {validity} | Tahun: {year}]\n{doc.page_content}"
+                    f"[File: {source} | Sumber: {source_type} | Validitas: {validity} | "
+                    f"Tahun: {year} | Kategori: {category}]{alias_line}\n{doc.page_content}"
                 )
             return "\n\n---\n\n".join(formatted_chunks)
 
         def call_llm(inputs):
             """Call LLM using serverless inference with dynamic model parameter."""
             # Truncate context
-            max_context_length = 1500
+            max_context_length = 3000
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             herbal_instruction = ""
@@ -440,7 +469,10 @@ class ChatBot:
                             "untuk gejala, batas bukti, dan keamanan. Jika pengguna menanyakan istilah "
                             "yang muncul pada jawaban sebelumnya tetapi istilah itu tidak jelas atau tidak "
                             "didukung konteks sumber, akui ketidakpastian dan jelaskan kemungkinan salah "
-                            "tulis/istilah tidak umum; jangan membuat klaim manfaat baru."
+                            "tulis/istilah tidak umum; jangan membuat klaim manfaat baru. Jika konteks "
+                            "memuat catatan istilah herbal atau nama ilmiah, gunakan nama Indonesia dari "
+                            "catatan tersebut. Jangan menerjemahkan nama tanaman secara bebas dan jangan "
+                            "menciptakan nama herbal baru."
                         )
                     },
                     {
@@ -452,6 +484,8 @@ class ChatBot:
                             f"{follow_up_instruction}\n\n"
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
+                            "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
+                            "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain. "
                             "Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
                             "untuk konsultasi dokter spesialis."
                         )

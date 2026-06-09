@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v2"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v3"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -63,6 +63,12 @@ class ChatBot:
         "mencegah", "komplikasi", "prognosis", "fertilitas", "kesuburan",
         "kehamilan", "nyeri", "sakit", "perdarahan", "diet", "gaya hidup",
         "olahraga", "kontrol", "konsultasi",
+    )
+
+    HERBAL_INTENT_KEYWORDS = (
+        "herbal", "alami", "tradisional", "jamu", "rempah", "tanaman obat",
+        "fitoterapi", "suplemen", "komplementer", "non farmakologis",
+        "non-farmakologis",
     )
 
     def __init__(self):
@@ -322,8 +328,22 @@ class ChatBot:
                 print(f"  - {cat}: {count}")
         else:
             print("⚠️ No documents loaded!")
-        
+
         return docs
+
+    def _is_herbal_intent(self, question: str) -> bool:
+        normalized_question = self._normalize_question(question)
+        return self._contains_any_keyword(normalized_question, self.HERBAL_INTENT_KEYWORDS)
+
+    def _build_retrieval_query(self, question: str) -> str:
+        if not self._is_herbal_intent(question):
+            return question
+
+        return (
+            f"{question} herbal alami tradisional jamu fitoterapi suplemen "
+            "anti inflamasi pereda nyeri nyeri haid dismenore keseimbangan hormon "
+            "endometriosis adenomyosis"
+        )
 
     def _setup_rag_chain(self):
         """Membangun RAG chain dengan serverless inference."""
@@ -357,6 +377,17 @@ class ChatBot:
             max_context_length = 1500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
+            herbal_instruction = ""
+            if self._is_herbal_intent(question):
+                herbal_instruction = (
+                    "Pertanyaan pengguna meminta pendekatan herbal/komplementer. "
+                    "Prioritaskan pembahasan dukungan herbal atau alami untuk membantu "
+                    "gejala seperti inflamasi, nyeri, dan keluhan terkait hormon jika "
+                    "didukung konteks. Jangan menjadikan obat farmakologis sebagai fokus "
+                    "utama; sebutkan terapi medis standar hanya singkat sebagai batas "
+                    "keamanan, bukan sebagai jawaban utama. Jelaskan bahwa herbal tidak "
+                    "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter."
+                )
             
             print(f"\n=== Calling {self.model_name} ===")
             print(f"Question: {question[:80]}...")
@@ -373,7 +404,10 @@ class ChatBot:
                             "profesional. Jangan menebak atau menyatakan bahwa pengguna memiliki "
                             "diagnosis, kondisi, tingkat keparahan, atau kebutuhan pengobatan tertentu "
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
-                            "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis."
+                            "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
+                            "Hormati intent pengguna: jika pengguna bertanya tentang herbal atau pendekatan "
+                            "alami, fokuskan jawaban pada pilihan herbal/komplementer, manfaat potensial "
+                            "untuk gejala, batas bukti, dan keamanan."
                         )
                     },
                     {
@@ -381,6 +415,7 @@ class ChatBot:
                         "content": (
                             f"Berdasarkan informasi medis berikut:\n\n{context}\n\n"
                             f"Pertanyaan pengguna: {question}\n\n"
+                            f"{herbal_instruction}\n\n"
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jawab dalam 2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
@@ -420,7 +455,10 @@ class ChatBot:
                 return self._generate_fallback_response(question, error_msg)
 
         self.rag_chain = (
-            {"context": retriever | format_docs, "question": RunnablePassthrough()}
+            {
+                "context": RunnableLambda(self._build_retrieval_query) | retriever | format_docs,
+                "question": RunnablePassthrough(),
+            }
             | RunnableLambda(call_llm)
             | StrOutputParser()
         )

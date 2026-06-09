@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v6"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v7"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -492,6 +492,47 @@ class ChatBot:
                 print(f"{idx}. {source} | chunk={chunk_id} | priority={priority} | {preview}")
             return format_docs(docs, question)
 
+        def looks_truncated(answer):
+            if not answer:
+                return True
+
+            stripped_answer = answer.rstrip()
+            if stripped_answer.endswith((".", "!", "?", ")", "]")):
+                return False
+
+            trailing_words = (
+                "dan", "atau", "dengan", "untuk", "dalam", "pada", "sebagai",
+                "karena", "namun", "meskipun", "efek", "perbedaan", "meliputi",
+                "seperti", "antara", "yang", "dapat",
+            )
+            last_words = stripped_answer.lower().split()[-4:]
+            return True if not last_words else last_words[-1].strip(",:;") in trailing_words
+
+        def request_completion_continuation(messages, partial_answer):
+            continuation_messages = messages + [
+                {
+                    "role": "assistant",
+                    "content": partial_answer,
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        "Jawaban sebelumnya terpotong. Lanjutkan langsung dari bagian terakhir "
+                        "tanpa mengulang bagian awal, selesaikan kalimat yang terpotong, lalu "
+                        "akhiri dengan kesimpulan dan anjuran konsultasi dokter spesialis."
+                    ),
+                },
+            ]
+
+            response = self.hf_client.chat_completion(
+                messages=continuation_messages,
+                model=self.model_name,
+                max_tokens=450,
+                temperature=0.4,
+                top_p=0.9
+            )
+            return response.choices[0].message.content.strip()
+
         def call_llm(inputs):
             """Call LLM using serverless inference with dynamic model parameter."""
             # Truncate context
@@ -574,13 +615,19 @@ class ChatBot:
                 response = self.hf_client.chat_completion(
                     messages=messages,
                     model=self.model_name,
-                    max_tokens=750,
-                    temperature=0.7,
+                    max_tokens=1200,
+                    temperature=0.6,
                     top_p=0.9
                 )
                 
                 # Extract answer
                 answer = response.choices[0].message.content.strip()
+                if looks_truncated(answer):
+                    print("Answer looks truncated; requesting continuation")
+                    continuation = request_completion_continuation(messages, answer)
+                    if continuation:
+                        answer = f"{answer} {continuation}".strip()
+
                 print(f"✅ Response received: {len(answer)} chars")
                 return answer
                 

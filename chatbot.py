@@ -33,6 +33,37 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
+    SCOPE_REJECTION_MESSAGE = (
+        "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
+        "adenomiosis/adenomyosis, serta gejala, diagnosis, perawatan, "
+        "pengobatan, risiko, kesuburan, kehamilan, dan pencegahannya. "
+        "Silakan ajukan pertanyaan dalam ruang lingkup tersebut. Untuk keluhan "
+        "medis yang mendesak, segera hubungi dokter atau fasilitas kesehatan terdekat."
+    )
+
+    CONDITION_SCOPE_KEYWORDS = (
+        "adenomyosis", "adenomiosis", "adenom", "endometriosis",
+        "endometrioma", "kista coklat",
+    )
+
+    GYNECOLOGY_CONTEXT_KEYWORDS = (
+        "rahim", "uterus", "endometrium", "miometrium", "panggul", "pelvis",
+        "ovarium", "indung telur", "tuba", "haid", "menstruasi", "mens",
+        "nyeri haid", "dismenore", "perdarahan menstruasi", "menorrhagia",
+        "nyeri panggul", "infertil", "infertilitas", "kesuburan", "hamil",
+        "kehamilan", "keguguran", "histerektomi", "laparoskopi", "usg",
+        "mri", "iud", "hormon", "gnrh",
+    )
+
+    CARE_SCOPE_KEYWORDS = (
+        "gejala", "tanda", "penyebab", "risiko", "faktor risiko", "diagnosis",
+        "diagnosa", "pemeriksaan", "skrining", "tes", "terapi", "pengobatan",
+        "obat", "perawatan", "penanganan", "operasi", "pencegahan", "cegah",
+        "mencegah", "komplikasi", "prognosis", "fertilitas", "kesuburan",
+        "kehamilan", "nyeri", "sakit", "perdarahan", "diet", "gaya hidup",
+        "olahraga", "kontrol", "konsultasi",
+    )
+
     def __init__(self):
         # Konfigurasi Database
         self.persist_directory = self._resolve_persist_directory()
@@ -403,11 +434,58 @@ class ChatBot:
         else:
             return f"❌ **Gangguan teknis**\n\n**Error:** {error_msg[:250]}\n\n**Solusi:** Coba lagi dalam beberapa saat. Hubungi administrator jika masalah berlanjut."
 
+    def _normalize_question(self, question: str) -> str:
+        """Normalize user question for deterministic guardrail checks."""
+        normalized = (question or "").lower()
+        normalized = re.sub(r"\s+", " ", normalized).strip()
+        return normalized
+
+    def _contains_any_keyword(self, text: str, keywords) -> bool:
+        return any(keyword in text for keyword in keywords)
+
+    def _is_in_medical_scope(self, question: str) -> bool:
+        """
+        Guardrail: only allow adenomyosis/endometriosis questions and closely
+        related gynecologic care, treatment, diagnosis, and prevention topics.
+        """
+        normalized_question = self._normalize_question(question)
+
+        if len(normalized_question) < 3:
+            return False
+
+        has_condition = self._contains_any_keyword(
+            normalized_question,
+            self.CONDITION_SCOPE_KEYWORDS,
+        )
+        has_gynecology_context = self._contains_any_keyword(
+            normalized_question,
+            self.GYNECOLOGY_CONTEXT_KEYWORDS,
+        )
+        has_care_context = self._contains_any_keyword(
+            normalized_question,
+            self.CARE_SCOPE_KEYWORDS,
+        )
+
+        return has_condition or (has_gynecology_context and has_care_context)
+
     def ask(self, question: str):
         """Ask question and get answer with sources."""
+        if not self._is_in_medical_scope(question):
+            print("Guardrail blocked out-of-scope question")
+            return {
+                "answer": self.SCOPE_REJECTION_MESSAGE,
+                "sources": [],
+                "metadata": {
+                    "guardrail": {
+                        "blocked": True,
+                        "reason": "out_of_scope"
+                    }
+                }
+            }
+
         if not self.rag_chain:
             return {
-                "answer": "❌ Sistem belum siap. Database belum diinisialisasi.", 
+                "answer": "❌ Sistem belum siap. Database belum diinisialisasi.",
                 "sources": [],
                 "metadata": {}
             }

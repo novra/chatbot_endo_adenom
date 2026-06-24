@@ -47,7 +47,7 @@ def render_header():
     )
     st.markdown(
         "<div style='text-align: right; opacity: 0.7; font-size: 0.9em; margin-top: 1em;'>"
-        "Dibuat oleh: <strong>Nuraisa Novia Hidayati</strong> (Riset Prototipe)"
+        "Dibuat oleh: <strong>Tim Chatbot Adendo</strong> (Riset Prototipe)"
         "</div>",
         unsafe_allow_html=True
     )

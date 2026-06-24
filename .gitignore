@@ -3,6 +3,7 @@
 .streamlit/
 __pycache__/
 outputs/
+outputs_*/
 .tmp/
 .ragas_chroma_db/
 chroma_db_adenomyosis_backup_*/

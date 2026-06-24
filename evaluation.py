@@ -28,8 +28,9 @@ from dotenv import load_dotenv
 
 DEFAULT_TESTSET = "ragas_testset.csv"
 DEFAULT_OUTPUT_DIR = "outputs"
-DEFAULT_EVALUATOR_MODEL = "Qwen/Qwen2.5-7B-Instruct"
+DEFAULT_EVALUATOR_MODEL = "Qwen/Qwen2.5-7B-Instruct:fastest"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -75,18 +76,40 @@ def load_testset(path: str, limit: int | None = None) -> list[dict[str, str]]:
 
 
 def build_evaluator(token: str, model_name: str):
-    from langchain_huggingface import ChatHuggingFace, HuggingFaceEmbeddings, HuggingFaceEndpoint
+    from langchain_huggingface import HuggingFaceEmbeddings
+    from langchain_openai import ChatOpenAI
 
-    endpoint = HuggingFaceEndpoint(
-        repo_id=model_name,
-        huggingfacehub_api_token=token,
+    llm = ChatOpenAI(
+        model=model_name,
+        api_key=token,
+        base_url=HF_ROUTER_BASE_URL,
         temperature=0.1,
-        max_new_tokens=1024,
-        client_kwargs={"timeout": 180},
+        max_tokens=1024,
+        timeout=180,
+        max_retries=3,
     )
-    llm = ChatHuggingFace(llm=endpoint, max_retries=3)
     embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBEDDING_MODEL)
     return llm, embeddings
+
+
+def verify_hf_router(token: str) -> None:
+    from openai import OpenAI
+
+    client = OpenAI(
+        api_key=token,
+        base_url=HF_ROUTER_BASE_URL,
+        timeout=20,
+        max_retries=1,
+    )
+    try:
+        client.models.list()
+    except Exception as error:
+        raise RuntimeError(
+            "Tidak bisa terhubung ke Hugging Face router "
+            f"({HF_ROUTER_BASE_URL}). Periksa DNS/koneksi internet, firewall, "
+            "proxy, dan izin token untuk Inference Providers. "
+            f"Detail: {type(error).__name__}: {error}"
+        ) from error
 
 
 def collect_rag_outputs(chatbot: Any, testset: list[dict[str, str]]) -> pd.DataFrame:
@@ -206,6 +229,7 @@ def main() -> None:
     args = parse_args()
     token = get_hf_token()
     os.environ.setdefault("CHROMA_PERSIST_DIRECTORY", ".ragas_chroma_db")
+    verify_hf_router(token)
 
     from chatbot import ChatBot
 

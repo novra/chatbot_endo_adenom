@@ -22,7 +22,7 @@ from langchain_core.prompts import PromptTemplate
 from langchain.schema.runnable import RunnablePassthrough, RunnableLambda
 from langchain.schema.output_parser import StrOutputParser
 from langchain_core.documents import Document
-from huggingface_hub import InferenceClient
+from openai import OpenAI
 
 class ChatBot:
     """
@@ -34,6 +34,7 @@ class ChatBot:
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
     GUARDRAIL_VERSION = "medical-scope-guardrail-v7"
+    HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
         "Maaf, saya hanya dapat menjawab pertanyaan seputar endometriosis, "
@@ -218,22 +219,25 @@ class ChatBot:
             os.environ["HF_TOKEN"] = hf_token
             os.environ["HUGGINGFACE_HUB_TOKEN"] = hf_token
             
-            print(f"✅ HF token set in environment")
-            print(f"Token preview: {hf_token[:15]}... (length: {len(hf_token)})")
+            print("✅ HF token loaded")
             
         except Exception as e:
             raise ValueError(f"❌ Error loading HF token: {e}")
         
-        # Initialize InferenceClient
-        self.hf_client = InferenceClient(token=hf_token, timeout=60)
-        print("✅ InferenceClient initialized for serverless inference")
+        self.hf_client = OpenAI(
+            api_key=hf_token,
+            base_url=self.HF_ROUTER_BASE_URL,
+            timeout=60,
+            max_retries=2,
+        )
+        print(f"✅ Hugging Face router client initialized: {self.HF_ROUTER_BASE_URL}")
         
         # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
         models_to_try = [
-            "Qwen/Qwen2.5-7B-Instruct",          # Sangat stabil dan cerdas berbahasa Indonesia
-            "google/gemma-2-9b-it",              # Native support dari Google di ekosistem HF
-            "microsoft/Phi-3.5-mini-instruct",   # Ringan dan hampir selalu tersedia
-            "meta-llama/Llama-3.2-1B-Instruct"   # Versi Llama terkecil yang lebih diizinkan
+            "Qwen/Qwen2.5-7B-Instruct:fastest",
+            "google/gemma-2-9b-it:fastest",
+            "microsoft/Phi-3.5-mini-instruct:fastest",
+            "meta-llama/Llama-3.2-1B-Instruct:fastest",
         ]
         
         self.model_name = None
@@ -242,7 +246,7 @@ class ChatBot:
             try:
                 print(f"🔄 Testing model: {model_name}")
                 # Test the model with a simple query
-                self.hf_client.chat_completion(
+                self.hf_client.chat.completions.create(
                     messages=[{"role": "user", "content": "Hi"}],
                     model=model_name,
                     max_tokens=3
@@ -269,7 +273,7 @@ class ChatBot:
         # Fallback terakhir jika semua gagal tapi tidak crash
         if not self.model_name:
             print("⚠️ No model test successful, defaulting to Qwen")
-            self.model_name = "Qwen/Qwen2.5-7B-Instruct"
+            self.model_name = "Qwen/Qwen2.5-7B-Instruct:fastest"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -634,7 +638,7 @@ class ChatBot:
                 },
             ]
 
-            response = self.hf_client.chat_completion(
+            response = self.hf_client.chat.completions.create(
                 messages=continuation_messages,
                 model=self.model_name,
                 max_tokens=450,
@@ -722,7 +726,7 @@ class ChatBot:
                 print("Sending to HF Serverless API...")
                 
                 # Call with model parameter
-                response = self.hf_client.chat_completion(
+                response = self.hf_client.chat.completions.create(
                     messages=messages,
                     model=self.model_name,
                     max_tokens=1200,

@@ -121,8 +121,7 @@ def collect_rag_outputs(chatbot: Any, testset: list[dict[str, str]]) -> pd.DataF
         print(f"Pertanyaan: {question}")
 
         response = chatbot.ask(question)
-        retrieval_query = chatbot._build_retrieval_query(question)
-        retrieved_docs = chatbot.source_retriever_chain.invoke(retrieval_query)
+        retrieved_docs = chatbot._retrieve_relevant_docs(question)
 
         records.append(
             {

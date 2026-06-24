@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v8-hf-router"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v10-chat-history"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -79,6 +79,19 @@ class ChatBot:
         r"\bmaksud\s+(.+?)\s+apa(?:\?|$)",
     )
 
+    FOLLOW_UP_REFERENCE_KEYWORDS = (
+        "itu", "tersebut", "tadi", "sebelumnya", "di atas", "diatas",
+        "yang tadi", "hal itu", "kondisi itu", "penyakit itu", "gejala itu",
+        "pengobatannya", "terapinya", "diagnosisnya", "penyebabnya",
+        "gejalanya", "risikonya", "dampaknya", "pencegahannya",
+    )
+
+    FOLLOW_UP_INTENT_KEYWORDS = (
+        "lanjut", "lanjutkan", "lebih lanjut", "jelaskan lagi", "detail",
+        "lebih detail", "bagaimana", "apakah", "kenapa", "mengapa",
+        "berapa", "apa saja", "contohnya", "contoh", "bedanya",
+    )
+
     HERBAL_TERM_ALIASES = {
         "phaleria macrocarpa": "mahkota dewa",
         "mahkota_dewa": "mahkota dewa",
@@ -93,6 +106,36 @@ class ChatBot:
         "curcumin", "curcuma", "kunyit", "ginseng", "anti-inflammatory",
         "anti inflamasi", "antioxidant", "antioksidan", "il-17", "nyeri",
         "dismenore", "inflammation", "endometriosis",
+    )
+
+    RETRIEVAL_STOPWORDS = {
+        "yang", "dan", "atau", "untuk", "dengan", "dalam", "pada", "dari",
+        "apa", "itu", "saja", "biasanya", "sebelum", "menggunakan", "keluhan",
+        "dapat", "perlu", "dokter", "terapi",
+    }
+
+    DIAGNOSIS_CONTEXT_KEYWORDS = (
+        "diagnosis", "diagnostik", "pemeriksaan", "anamnesis", "usg",
+        "ultrasound", "transvaginal", "mri", "histologi", "histopatologis",
+        "sensitivitas", "spesifisitas",
+    )
+
+    TREATMENT_CONTEXT_KEYWORDS = (
+        "tatalaksana", "penatalaksanaan", "terapi", "pengobatan",
+        "medikamentosa", "hormonal", "oains", "nsaid", "progestin",
+        "lng-ius", "levonorgestrel", "gnrh", "histerektomi", "operatif",
+    )
+
+    INFERTILITY_CONTEXT_KEYWORDS = (
+        "infertilitas", "infertil", "subfertilitas", "fertilitas",
+        "implantasi", "junctional zone", "radikal bebas", "ivf",
+        "in vitro fertilization", "fertilisasi",
+    )
+
+    HERBAL_SAFETY_CONTEXT_KEYWORDS = (
+        "keamanan", "efek samping", "interaksi", "dosis", "kualitas",
+        "konvensional", "konsultasi", "hormonal", "kehamilan", "operasi",
+        "tidak boleh", "pengganti",
     )
 
     def __init__(self):
@@ -472,11 +515,22 @@ class ChatBot:
         normalized_question = self._normalize_question(question)
         return self._contains_any_keyword(normalized_question, self.HERBAL_INTENT_KEYWORDS)
 
+    def _is_herbal_safety_intent(self, question: str) -> bool:
+        normalized_question = self._normalize_question(question)
+        return self._is_herbal_intent(question) and any(
+            keyword in normalized_question
+            for keyword in (
+                "ganti", "menggantikan", "pengganti", "perhatikan", "sebelum",
+                "aman", "keamanan", "efek samping", "interaksi", "dosis",
+            )
+        )
+
     def _build_retrieval_query(self, question: str) -> str:
         if not self._is_herbal_intent(question):
             return question
 
         normalized_question = self._normalize_question(question)
+        is_safety_or_replacement_intent = self._is_herbal_safety_intent(question)
         condition_terms = []
         if "endometriosis" in normalized_question:
             condition_terms.append("endometriosis")
@@ -484,6 +538,14 @@ class ChatBot:
             condition_terms.append("adenomyosis adenomiosis")
         if not condition_terms:
             condition_terms.append("endometriosis adenomyosis")
+
+        if is_safety_or_replacement_intent:
+            return (
+                f"{question} herbal komplementer keamanan efek samping dosis "
+                "kualitas produk interaksi obat terapi hormonal terapi konvensional "
+                "tidak menggantikan diagnosis dokter konsultasi dokter batas bukti "
+                f"{' '.join(condition_terms)}"
+            )
 
         return (
             f"{question} herbal alami tradisional jamu fitoterapi suplemen "
@@ -497,12 +559,16 @@ class ChatBot:
             return question
 
         term = self._extract_follow_up_term(question)
+        last_topic = self._last_topic_from_history(chat_history)
         history_text = self._history_text(chat_history)
         context_excerpt = history_text[-900:]
+        referenced_topic = term or last_topic or "topik sebelumnya"
         return (
             f"{question}\n\n"
-            f"Konteks percakapan sebelumnya menyebut istilah '{term}' dalam pembahasan "
-            f"endometriosis/adenomyosis dan herbal/komplementer. Ringkasan konteks: "
+            f"Ini adalah pertanyaan lanjutan yang merujuk pada '{referenced_topic}' "
+            f"dalam pembahasan endometriosis/adenomyosis. Gunakan riwayat percakapan "
+            f"untuk menafsirkan kata seperti itu/tersebut/tadi/pengobatannya/diagnosisnya. "
+            f"Ringkasan konteks: "
             f"{context_excerpt}"
         )
 
@@ -522,10 +588,64 @@ class ChatBot:
 
     def _doc_context_priority(self, doc, question: str) -> int:
         source = doc.metadata.get("source", "")
+        category = doc.metadata.get("category", "")
+        normalized_question = self._normalize_question(question)
         searchable_text = self._normalize_question(f"{source} {doc.page_content}")
+        question_terms = {
+            term
+            for term in re.findall(r"[a-zA-ZÀ-ÿ0-9]+", normalized_question)
+            if len(term) > 3 and term not in self.RETRIEVAL_STOPWORDS
+        }
         score = 0
 
+        score += min(18, sum(2 for term in question_terms if term in searchable_text))
+
+        if "adenomiosis" in normalized_question or "adenomyosis" in normalized_question:
+            if category == "adenomyosis":
+                score += 10
+            if "adenomyosis" in searchable_text or "adenomiosis" in searchable_text:
+                score += 6
+
+        if normalized_question.startswith("apa itu"):
+            if any(keyword in searchable_text for keyword in ("adalah", "merupakan", "invasi jinak", "miometrium")):
+                score += 12
+            if any(keyword in searchable_text for keyword in ("diagnosis", "pemeriksaan", "terapi", "tatalaksana", "infertilitas", "ivf")):
+                score -= 8
+
+        if "endometriosis" in normalized_question:
+            if category == "endometriosis":
+                score += 12
+            if "endometriosis" in searchable_text:
+                score += 8
+
+        if any(keyword in normalized_question for keyword in ("diagnosis", "didiagnosis", "pemeriksaan", "diagnosa")):
+            score += sum(5 for keyword in self.DIAGNOSIS_CONTEXT_KEYWORDS if keyword in searchable_text)
+            if any(keyword in searchable_text for keyword in ("fertilitas", "infertilitas", "ivf", "treatment", "tatalaksana")):
+                score -= 6
+
+        if any(keyword in normalized_question for keyword in ("pengobatan", "pengobatannya", "terapi", "terapinya", "tatalaksana", "penanganan")):
+            score += sum(5 for keyword in self.TREATMENT_CONTEXT_KEYWORDS if keyword in searchable_text)
+            if any(keyword in searchable_text for keyword in ("fertilitas", "infertilitas", "ivf")):
+                score -= 5
+
+        if any(keyword in normalized_question for keyword in ("infertil", "infertilitas", "fertilitas", "kesuburan")):
+            score += sum(6 for keyword in self.INFERTILITY_CONTEXT_KEYWORDS if keyword in searchable_text)
+            if category == "adenomyosis":
+                score += 4
+
+        if "perbedaan" in normalized_question and "endometriosis" in normalized_question:
+            if ("adenomyosis" in searchable_text or "adenomiosis" in searchable_text) and "endometriosis" in searchable_text:
+                score += 16
+            if any(keyword in searchable_text for keyword in ("fertilitas", "ivf", "treatment")):
+                score -= 4
+
         if self._is_herbal_intent(question):
+            source_lower = source.lower()
+            is_adjacent_topic = any(keyword in source_lower for keyword in ("kanker", "cervical", "fibroid", "miom"))
+            if any(keyword in source_lower for keyword in ("herbal", "jamu", "mahkota")) and not is_adjacent_topic:
+                score += 14
+            if not any(keyword in searchable_text for keyword in self.HERBAL_CONTEXT_KEYWORDS):
+                score -= 20
             score += sum(3 for keyword in self.HERBAL_CONTEXT_KEYWORDS if keyword in searchable_text)
             if "mahkota" in searchable_text or "phaleria macrocarpa" in searchable_text:
                 score += 20
@@ -535,8 +655,26 @@ class ChatBot:
                 score -= 4
             if "operative" in searchable_text or "surgery" in searchable_text:
                 score -= 8
+            if any(keyword in normalized_question for keyword in ("ganti", "menggantikan", "pengganti", "perhatikan", "sebelum")):
+                score += sum(5 for keyword in self.HERBAL_SAFETY_CONTEXT_KEYWORDS if keyword in searchable_text)
+            if not any(keyword in normalized_question for keyword in ("serviks", "kanker", "fibroid", "miom")):
+                if any(keyword in searchable_text for keyword in ("kanker serviks", "cervical cancer", "fibroid", "mioma")):
+                    score -= 35
+            if not any(keyword in normalized_question for keyword in ("infertil", "fertilitas", "kesuburan")):
+                if any(keyword in searchable_text for keyword in ("infertilitas", "fertilitas", "ivf", "in vitro fertilization")):
+                    score -= 10
 
         return score
+
+    def _retrieve_relevant_docs(self, question: str, limit: int = 5):
+        retrieval_query = self._build_retrieval_query(question)
+        candidate_docs = self.source_retriever_chain.invoke(retrieval_query)
+        ranked_docs = sorted(
+            candidate_docs,
+            key=lambda doc: self._doc_context_priority(doc, question),
+            reverse=True,
+        )
+        return ranked_docs[:limit]
 
     def _trim_doc_text(self, text: str, question: str, max_chars: int = 900) -> str:
         compact_text = re.sub(r"\s+", " ", text).strip()
@@ -567,7 +705,7 @@ class ChatBot:
 
         retriever = self.vector_store.as_retriever(
             search_type="similarity",
-            search_kwargs={'k': 8}
+            search_kwargs={'k': 24}
         )
         print("✅ Retriever configured")
 
@@ -595,8 +733,7 @@ class ChatBot:
             return "\n\n---\n\n".join(formatted_chunks)
 
         def retrieve_and_format(question):
-            retrieval_query = self._build_retrieval_query(question)
-            docs = retriever.invoke(retrieval_query)
+            docs = self._retrieve_relevant_docs(question)
             print("\n=== Retrieved context chunks ===")
             for idx, doc in enumerate(docs, 1):
                 source = doc.metadata.get("source", "Unknown")
@@ -605,6 +742,12 @@ class ChatBot:
                 preview = self._trim_doc_text(doc.page_content, question, max_chars=180)
                 print(f"{idx}. {source} | chunk={chunk_id} | priority={priority} | {preview}")
             return format_docs(docs, question)
+
+        def extract_question_and_history(question):
+            parts = str(question).split("\n\n", 1)
+            user_question = parts[0].strip()
+            history_context = parts[1].strip() if len(parts) > 1 else ""
+            return user_question, history_context
 
         def looks_truncated(answer):
             if not answer:
@@ -653,19 +796,40 @@ class ChatBot:
             max_context_length = 6500
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
+            user_question, history_context = extract_question_and_history(question)
             herbal_instruction = ""
-            if self._is_herbal_intent(question):
-                herbal_instruction = (
-                    "Pertanyaan pengguna meminta pendekatan herbal/komplementer. "
-                    "Prioritaskan pembahasan dukungan herbal atau alami untuk membantu "
-                    "gejala seperti inflamasi, nyeri, dan keluhan terkait hormon jika "
-                    "didukung konteks. Jangan menjadikan obat farmakologis sebagai fokus "
-                    "utama; sebutkan terapi medis standar hanya singkat sebagai batas "
-                    "keamanan, bukan sebagai jawaban utama. Jelaskan bahwa herbal tidak "
-                    "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter. "
-                    "Jika beberapa sumber herbal relevan tersedia, sebutkan masing-masing "
-                    "herbal, nama ilmiah bila ada, mekanisme/gejala yang dituju, dan batas "
-                    "buktinya."
+            if self._is_herbal_intent(user_question):
+                if self._is_herbal_safety_intent(user_question):
+                    herbal_instruction = (
+                        "Pertanyaan pengguna berfokus pada keamanan herbal atau apakah herbal "
+                        "dapat menggantikan terapi dokter. Jawab langsung bahwa herbal tidak "
+                        "boleh menggantikan diagnosis atau terapi dokter. Fokus pada batas bukti, "
+                        "keamanan, dosis, kualitas produk, efek samping, interaksi dengan obat "
+                        "atau terapi hormonal, kondisi kehamilan/rencana operasi, dan perlunya "
+                        "konsultasi tenaga kesehatan. Jangan membuat daftar herbal panjang kecuali "
+                        "contoh tersebut benar-benar diperlukan; cukup sebutkan contoh singkat bila "
+                        "didukung konteks."
+                    )
+                else:
+                    herbal_instruction = (
+                        "Pertanyaan pengguna meminta pendekatan herbal/komplementer. "
+                        "Prioritaskan pembahasan dukungan herbal atau alami untuk membantu "
+                        "gejala seperti inflamasi, nyeri, dan keluhan terkait hormon jika "
+                        "didukung konteks. Jangan menjadikan obat farmakologis sebagai fokus "
+                        "utama; sebutkan terapi medis standar hanya singkat sebagai batas "
+                        "keamanan, bukan sebagai jawaban utama. Jelaskan bahwa herbal tidak "
+                        "boleh diposisikan sebagai pengganti diagnosis atau terapi dokter. "
+                        "Jika beberapa sumber herbal relevan tersedia, sebutkan masing-masing "
+                        "herbal, nama ilmiah bila ada, mekanisme/gejala yang dituju, dan batas "
+                        "buktinya."
+                    )
+            intent_instruction = ""
+            if self._normalize_question(user_question).startswith("apa itu"):
+                intent_instruction = (
+                    "Pertanyaan ini meminta definisi. Jawab dengan definisi langsung dan gejala "
+                    "utama yang paling relevan saja dalam maksimal 2 paragraf. Jangan memakai daftar "
+                    "poin. Jangan memperluas ke diagnosis, pemeriksaan, infertilitas, atau terapi "
+                    "kecuali diminta. Instruksi definisi ini lebih prioritas daripada instruksi format lain."
                 )
             follow_up_instruction = ""
             if self._extract_follow_up_term(question):
@@ -708,15 +872,18 @@ class ChatBot:
                         "role": "user",
                         "content": (
                             f"Berdasarkan informasi medis berikut:\n\n{context}\n\n"
-                            f"Pertanyaan pengguna: {question}\n\n"
+                            f"Riwayat percakapan relevan:\n{history_context or 'Tidak ada.'}\n\n"
+                            f"Pertanyaan pengguna: {user_question}\n\n"
                             f"{herbal_instruction}\n\n"
+                            f"{intent_instruction}\n\n"
                             f"{follow_up_instruction}\n\n"
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
                             "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain. "
-                            "Untuk pertanyaan herbal, jawab lebih lengkap dalam beberapa poin terstruktur "
-                            "berdasarkan sumber yang relevan. Untuk pertanyaan non-herbal, jawab dalam "
+                            "Untuk pertanyaan herbal, jawab sesuai intent pengguna; bila pertanyaan "
+                            "tentang keamanan/pengganti dokter, fokuskan pada batas keamanan dan "
+                            "jangan memperpanjang daftar herbal. Untuk pertanyaan non-herbal, jawab dalam "
                             "2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
                             "untuk konsultasi dokter spesialis."
                         )
@@ -726,10 +893,16 @@ class ChatBot:
                 print("Sending to HF Serverless API...")
                 
                 # Call with model parameter
+                max_answer_tokens = 650
+                if self._is_herbal_safety_intent(user_question):
+                    max_answer_tokens = 850
+                elif not self._normalize_question(user_question).startswith("apa itu"):
+                    max_answer_tokens = 1200
+
                 response = self.hf_client.chat.completions.create(
                     messages=messages,
                     model=self.model_name,
-                    max_tokens=1200,
+                    max_tokens=max_answer_tokens,
                     temperature=0.6,
                     top_p=0.9
                 )
@@ -824,16 +997,49 @@ class ChatBot:
                 parts.append(str(content))
         return self._normalize_question(" ".join(parts))
 
+    def _last_topic_from_history(self, chat_history) -> str:
+        if not chat_history:
+            return ""
+
+        for message in reversed(chat_history):
+            if not isinstance(message, dict):
+                continue
+            content = self._normalize_question(str(message.get("content", "")))
+            if not content:
+                continue
+            if "adenomiosis" in content or "adenomyosis" in content:
+                return "adenomiosis"
+            if "endometriosis" in content:
+                return "endometriosis"
+            if self._contains_any_keyword(content, self.HERBAL_CONTEXT_KEYWORDS):
+                return "herbal/komplementer"
+
+        return ""
+
     def _is_contextual_follow_up(self, question: str, chat_history=None) -> bool:
+        normalized_question = self._normalize_question(question)
         term = self._extract_follow_up_term(question)
-        if len(term) < 3:
-            return False
-
         history_text = self._history_text(chat_history)
-        if not history_text or term not in history_text:
+        if not history_text or not self._is_in_medical_scope(history_text):
             return False
 
-        return self._is_in_medical_scope(history_text)
+        if term and len(term) >= 3:
+            if term in history_text or self._is_in_medical_scope(term):
+                return True
+
+        has_reference = self._contains_any_keyword(
+            normalized_question,
+            self.FOLLOW_UP_REFERENCE_KEYWORDS,
+        )
+        has_follow_up_intent = self._contains_any_keyword(
+            normalized_question,
+            self.FOLLOW_UP_INTENT_KEYWORDS,
+        )
+
+        if has_reference or has_follow_up_intent:
+            return len(normalized_question.split()) <= 14
+
+        return False
 
     def _is_in_medical_scope(self, question: str) -> bool:
         """
@@ -892,9 +1098,7 @@ class ChatBot:
             print(f"Answer generated: {answer[:100]}...")
 
             try:
-                retrieved_docs = self.source_retriever_chain.invoke(
-                    self._build_retrieval_query(contextual_question)
-                )
+                retrieved_docs = self._retrieve_relevant_docs(contextual_question)
                 print(f"Retrieved {len(retrieved_docs)} source documents")
 
                 sources = []

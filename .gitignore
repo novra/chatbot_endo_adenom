@@ -1,3 +1,11 @@
 .env
+.venv/
 .streamlit/
 __pycache__/
+outputs/
+.tmp/
+.ragas_chroma_db/
+chroma_db_adenomyosis_backup_*/
+chroma_db_adenomyosis_rebuilt_*/
+.venv_py314_backup/
+.venv_py312_failed/

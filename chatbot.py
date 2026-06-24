@@ -113,12 +113,16 @@ class ChatBot:
 
     def _resolve_persist_directory(self):
         """Pilih direktori Chroma yang writable, fallback ke /tmp jika perlu."""
+        configured_path = os.getenv("CHROMA_PERSIST_DIRECTORY")
         candidates = [
+            Path(configured_path) if configured_path else None,
             Path("./chroma_db_adenomyosis"),
             Path("/tmp/chroma_db_adenomyosis"),
         ]
 
         for path in candidates:
+            if path is None:
+                continue
             try:
                 path.mkdir(parents=True, exist_ok=True)
                 test_file = path / ".write_test"
@@ -134,11 +138,79 @@ class ChatBot:
         print("⚠️ Falling back to default directory")
         return "./chroma_db_adenomyosis"
 
+    def _chroma_db_needs_rebuild(self):
+        """Detect Chroma SQLite schemas that are incompatible with chromadb 0.4.22."""
+        sqlite_path = Path(self.persist_directory) / "chroma.sqlite3"
+        if not sqlite_path.exists():
+            return False
+
+        try:
+            with sqlite3.connect(str(sqlite_path)) as connection:
+                columns = {
+                    row[1]
+                    for row in connection.execute("PRAGMA table_info(collections)")
+                }
+        except sqlite3.Error as error:
+            print(f"Could not inspect Chroma schema: {error}")
+            return True
+
+        missing_columns = {"topic"} - columns
+        if missing_columns:
+            print(
+                "Incompatible Chroma schema detected. "
+                f"Missing columns: {', '.join(sorted(missing_columns))}"
+            )
+            return True
+
+        return False
+
+    def _archive_persist_directory(self):
+        """Move an incompatible Chroma directory aside so a fresh DB can be built."""
+        persist_path = Path(self.persist_directory)
+        if not persist_path.exists():
+            return
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        archive_path = persist_path.with_name(f"{persist_path.name}_backup_{timestamp}")
+
+        try:
+            shutil.move(str(persist_path), str(archive_path))
+            print(f"Old ChromaDB archived to: {archive_path}")
+            return True
+        except Exception as move_error:
+            print(f"Could not archive old ChromaDB: {move_error}")
+            try:
+                shutil.rmtree(str(persist_path))
+                print("Old ChromaDB removed")
+                return True
+            except Exception as remove_error:
+                print(f"Could not remove old ChromaDB: {remove_error}")
+                fallback_path = persist_path.with_name(
+                    f"{persist_path.name}_rebuilt_{timestamp}"
+                )
+                fallback_path.mkdir(parents=True, exist_ok=True)
+                self.persist_directory = str(fallback_path)
+                print(f"Using fresh ChromaDB directory instead: {fallback_path}")
+                return False
+
     def _initialize_hf_client(self):
         """Menginisialisasi Hugging Face Client dengan fallback models yang kuat."""
         try:
-            # Dukung HF_TOKEN atau HUGGINGFACE_API_KEY
-            hf_token = st.secrets.get("HUGGINGFACE_API_KEY") or st.secrets.get("HF_TOKEN")
+            # Dukung Streamlit secrets dan eksekusi CLI/evaluasi via .env.
+            secrets_token = None
+            try:
+                secrets_token = (
+                    st.secrets.get("HUGGINGFACE_API_KEY")
+                    or st.secrets.get("HF_TOKEN")
+                )
+            except Exception:
+                secrets_token = None
+
+            hf_token = (
+                secrets_token
+                or os.getenv("HUGGINGFACE_API_KEY")
+                or os.getenv("HF_TOKEN")
+            )
             if not hf_token or len(hf_token) < 10:
                 raise ValueError("Token HuggingFace tidak valid atau tidak ditemukan")
             
@@ -204,6 +276,14 @@ class ChatBot:
         db_exists = os.path.exists(self.persist_directory) and \
                     len(os.listdir(self.persist_directory)) > 0 if os.path.exists(self.persist_directory) else False
 
+        if db_exists and self._chroma_db_needs_rebuild():
+            st.warning(
+                "Database Chroma lama tidak kompatibel dengan versi ChromaDB saat ini. "
+                "Database akan dibuat ulang dari PDF lokal."
+            )
+            self._archive_persist_directory()
+            db_exists = False
+
         if db_exists:
             print(f"--- Memuat database Chroma dari {self.persist_directory} ---")
             try:
@@ -214,14 +294,44 @@ class ChatBot:
                 )
                 print("✅ ChromaDB loaded successfully")
                 return vector_store
-            except sqlite3.OperationalError as e:
-                print(f"⚠️ Database error: {e}")
-                st.warning("Database Chroma bermasalah atau skema tidak kompatibel. Akan dibuat ulang dari folder data.")
-                try:
-                    shutil.rmtree(self.persist_directory)
-                    print("🗑️ Old database removed")
-                except Exception as rm_error:
-                    print(f"⚠️ Could not remove old DB: {rm_error}")
+            except (sqlite3.OperationalError, sqlite3.DatabaseError) as e:
+                # Handle database schema errors (e.g., "no such column: collections.topic")
+                error_msg = str(e).lower()
+                if "no such column" in error_msg or "database is locked" in error_msg:
+                    print(f"⚠️ Database schema mismatch atau versi ChromaDB tidak kompatibel: {e}")
+                    st.warning(
+                        "⚠️ Database schema tidak kompatibel (mungkin ada perubahan versi ChromaDB).\n"
+                        "Database lama akan dihapus dan dibuat ulang. Ini memerlukan waktu 1-2 menit..."
+                    )
+                    try:
+                        shutil.rmtree(self.persist_directory)
+                        print("🗑️ Old database removed due to schema incompatibility")
+                    except Exception as rm_error:
+                        print(f"⚠️ Could not remove old DB: {rm_error}")
+                else:
+                    print(f"⚠️ Database error: {e}")
+                    st.warning("Database Chroma bermasalah. Akan dibuat ulang dari folder data.")
+                    try:
+                        shutil.rmtree(self.persist_directory)
+                        print("🗑️ Old database removed")
+                    except Exception as rm_error:
+                        print(f"⚠️ Could not remove old DB: {rm_error}")
+            except Exception as e:
+                # Catch any other unexpected errors
+                error_msg = str(e)
+                print(f"⚠️ Unexpected error loading ChromaDB: {error_msg}")
+                if "no such column" in error_msg.lower() or "schema" in error_msg.lower():
+                    st.warning(
+                        "⚠️ Database schema error. Menghapus database lama dan membuat yang baru...\n"
+                        "(Ini memerlukan waktu 1-2 menit)"
+                    )
+                    try:
+                        shutil.rmtree(self.persist_directory)
+                        print("🗑️ Old database removed due to error")
+                    except Exception as rm_error:
+                        print(f"⚠️ Could not remove old DB: {rm_error}")
+                else:
+                    st.warning(f"Error loading database: {error_msg}")
         
         # Create new database
         print("--- Database belum ditemukan. Memulai proses indexing PDF... ---")

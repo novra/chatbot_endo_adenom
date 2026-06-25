@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v14-follow-up-memory"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v15-condition-memory"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -1224,11 +1224,46 @@ class ChatBot:
 
         return ""
 
+    def _last_condition_from_history(self, chat_history) -> str:
+        if not chat_history:
+            return ""
+
+        user_messages = [
+            message for message in chat_history
+            if isinstance(message, dict) and message.get("role") == "user"
+        ]
+        candidate_messages = user_messages[-6:] if user_messages else chat_history[-10:]
+
+        for message in reversed(candidate_messages):
+            if not isinstance(message, dict):
+                continue
+            content = self._normalize_question(str(message.get("content", "")))
+            if not content:
+                continue
+            has_endometriosis = "endometriosis" in content
+            has_adenomyosis = "adenomiosis" in content or "adenomyosis" in content
+            if has_endometriosis and has_adenomyosis:
+                return "endometriosis atau adenomiosis"
+            if has_endometriosis:
+                return "endometriosis"
+            if has_adenomyosis:
+                return "adenomiosis"
+
+        return ""
+
     def _build_standalone_follow_up_question(self, question: str, chat_history=None) -> str:
         normalized_question = self._normalize_question(question)
         term = self._extract_follow_up_term(question)
         last_topic = self._last_topic_from_history(chat_history)
-        topic = term or last_topic or "endometriosis atau adenomiosis"
+        last_condition = self._last_condition_from_history(chat_history)
+        topic = term or last_topic or last_condition or "endometriosis atau adenomiosis"
+        if (
+            not term
+            and last_condition
+            and ("herbal" in topic or self._is_herbal_intent(topic))
+            and last_condition not in topic
+        ):
+            topic = f"{topic} untuk {last_condition}"
         condition_topic = topic
         if "herbal" in condition_topic or self._is_herbal_intent(condition_topic):
             if "endometriosis" in condition_topic and (
@@ -1270,6 +1305,12 @@ class ChatBot:
             return (
                 f"Apa saja aspek keamanan, efek samping, dosis, dan interaksi "
                 f"yang perlu diperhatikan pada {topic}?"
+            )
+
+        if self._is_herbal_intent(question):
+            return (
+                f"Bagaimana penggunaan herbal/komplementer untuk {condition_topic} "
+                "sebagai pendamping terapi medis?"
             )
 
         if any(
@@ -1350,11 +1391,19 @@ class ChatBot:
             normalized_question,
             self.FOLLOW_UP_INTENT_KEYWORDS,
         )
+        has_care_follow_up_intent = (
+            self._contains_any_keyword(normalized_question, self.CARE_SCOPE_KEYWORDS)
+            or self._is_herbal_intent(question)
+        )
+        has_prior_condition = bool(self._last_condition_from_history(chat_history))
 
         if has_reference:
             return len(normalized_question.split()) <= 14
 
         if has_follow_up_intent and not has_explicit_condition:
+            return len(normalized_question.split()) <= 10
+
+        if has_care_follow_up_intent and has_prior_condition and not has_explicit_condition:
             return len(normalized_question.split()) <= 10
 
         return False

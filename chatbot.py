@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v18-longer-chat-memory"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v19-specific-herbal-object"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -63,7 +63,8 @@ class ChatBot:
         "obat", "perawatan", "penanganan", "operasi", "pencegahan", "cegah",
         "mencegah", "komplikasi", "prognosis", "fertilitas", "kesuburan",
         "kehamilan", "nyeri", "sakit", "perdarahan", "diet", "gaya hidup",
-        "olahraga", "kontrol", "konsultasi",
+        "olahraga", "kontrol", "konsultasi", "rekomendasi",
+        "direkomendasikan", "manfaat", "khasiat",
     )
 
     HERBAL_INTENT_KEYWORDS = (
@@ -129,6 +130,13 @@ class ChatBot:
         "curcuma", "kunyit", "ginseng", "tanaman obat", "fitoterapi",
         "suplemen", "komplementer",
     )
+
+    SPECIFIC_HERBAL_OBJECTS = {
+        "mahkota dewa": ("mahkota dewa", "phaleria macrocarpa", "mahkota_dewa"),
+        "kunyit/kurkumin": ("kunyit", "curcuma longa", "curcumin", "kurkumin"),
+        "jahe": ("jahe", "zingiber officinale", "ginger"),
+        "ginseng": ("ginseng", "panax ginseng"),
+    }
 
     RETRIEVAL_STOPWORDS = {
         "yang", "dan", "atau", "untuk", "dengan", "dalam", "pada", "dari",
@@ -538,7 +546,17 @@ class ChatBot:
 
     def _is_herbal_intent(self, question: str) -> bool:
         normalized_question = self._normalize_question(question)
-        return self._contains_any_keyword(normalized_question, self.HERBAL_INTENT_KEYWORDS)
+        return (
+            self._contains_any_keyword(normalized_question, self.HERBAL_INTENT_KEYWORDS)
+            or self._specific_herbal_topic(question) != ""
+        )
+
+    def _specific_herbal_topic(self, question: str) -> str:
+        normalized_question = self._normalize_question(question)
+        for topic, aliases in self.SPECIFIC_HERBAL_OBJECTS.items():
+            if any(alias in normalized_question for alias in aliases):
+                return topic
+        return ""
 
     def _is_treatment_intent(self, question: str) -> bool:
         normalized_question = self._normalize_question(question)
@@ -565,6 +583,7 @@ class ChatBot:
         question = self._split_contextual_question(question)[0]
         normalized_question = self._normalize_question(question)
         treatment_intent = self._is_treatment_intent(question)
+        specific_herbal_topic = self._specific_herbal_topic(question)
 
         if not self._is_herbal_intent(question):
             if treatment_intent:
@@ -594,6 +613,14 @@ class ChatBot:
                 f"{question} herbal komplementer keamanan efek samping dosis "
                 "kualitas produk interaksi obat terapi hormonal terapi konvensional "
                 "tidak menggantikan diagnosis dokter konsultasi dokter batas bukti "
+                f"{' '.join(condition_terms)}"
+            )
+
+        if specific_herbal_topic == "mahkota dewa":
+            return (
+                f"{question} mahkota dewa phaleria macrocarpa flavonoid il-17a "
+                "anti-inflammatory anti inflamasi endometriosis mekanisme potensi "
+                "manfaat rekomendasi batas bukti keamanan efek samping interaksi "
                 f"{' '.join(condition_terms)}"
             )
 
@@ -919,6 +946,7 @@ class ChatBot:
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             user_question, history_context = extract_question_and_history(question)
+            specific_herbal_topic = self._specific_herbal_topic(user_question)
             herbal_instruction = ""
             if self._is_herbal_intent(user_question):
                 if self._is_herbal_safety_intent(user_question):
@@ -951,6 +979,14 @@ class ChatBot:
                         "Phaleria macrocarpa, atau ramuan herbal bila ada dalam konteks. Bila "
                         "mahkota dewa muncul di konteks, tetap sebutkan sebagai salah satu opsi "
                         "potensial, tetapi selalu sandingkan dengan herbal lain yang relevan."
+                    )
+                if specific_herbal_topic:
+                    herbal_instruction += (
+                        f" Pertanyaan pengguna menyebut objek herbal spesifik: {specific_herbal_topic}. "
+                        "Fokuskan jawaban hanya pada objek tersebut: alasan dapat direkomendasikan, "
+                        "kandungan/mekanisme yang didukung konteks, gejala yang mungkin dituju, "
+                        "batas bukti, keamanan, efek samping, dan interaksi. Jangan membuat daftar "
+                        "herbal lain kecuali pengguna meminta perbandingan atau alternatif."
                     )
             treatment_instruction = ""
             clinical_treatment_intent = (
@@ -1431,6 +1467,7 @@ class ChatBot:
             normalized_question,
             self.CONDITION_SCOPE_KEYWORDS,
         )
+        has_specific_herbal = self._specific_herbal_topic(question) != ""
         has_gynecology_context = self._contains_any_keyword(
             normalized_question,
             self.GYNECOLOGY_CONTEXT_KEYWORDS,
@@ -1440,7 +1477,11 @@ class ChatBot:
             self.CARE_SCOPE_KEYWORDS,
         )
 
-        return has_condition or (has_gynecology_context and has_care_context)
+        return (
+            has_condition
+            or (has_gynecology_context and has_care_context)
+            or (has_specific_herbal and has_care_context)
+        )
 
     def ask(self, question: str, chat_history=None):
         """Ask question and get answer with sources."""

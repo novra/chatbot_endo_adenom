@@ -310,8 +310,8 @@ class ChatBot:
         
         # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
         models_to_try = [
-            "Qwen/Qwen2.5-7B-Instruct:fastest",
             "google/gemma-2-9b-it:fastest",
+            "Qwen/Qwen2.5-7B-Instruct:fastest",
             "microsoft/Phi-3.5-mini-instruct:fastest",
             "meta-llama/Llama-3.2-1B-Instruct:fastest",
         ]

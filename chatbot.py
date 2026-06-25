@@ -310,8 +310,8 @@ class ChatBot:
         
         # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
         models_to_try = [
+            "Qwen/Qwen3.6-35B-A3B:fastest",
             "google/gemma-3-12b-it:fastest",
-            "Qwen/Qwen2.5-7B-Instruct:fastest",
             "microsoft/Phi-3.5-mini-instruct:fastest",
             "meta-llama/Llama-3.2-1B-Instruct:fastest",
         ]
@@ -349,7 +349,7 @@ class ChatBot:
         # Fallback terakhir jika semua gagal tapi tidak crash
         if not self.model_name:
             print("⚠️ No model test successful, defaulting to Qwen")
-            self.model_name = "Qwen/Qwen2.5-7B-Instruct:fastest"
+            self.model_name = "Qwen/Qwen3.6-35B-A3B:fastest"
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -1122,6 +1122,11 @@ class ChatBot:
                     max_answer_tokens = 600
                 elif not self._normalize_question(user_question).startswith("apa itu"):
                     max_answer_tokens = 1200
+                if self.model_name and any(
+                    model_family in self.model_name
+                    for model_family in ("Qwen3.6", "Qwen3.5")
+                ):
+                    max_answer_tokens = max(max_answer_tokens, 3200)
 
                 response = self.hf_client.chat.completions.create(
                     messages=messages,

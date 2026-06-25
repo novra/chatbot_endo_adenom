@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v12-clinical-treatment-detail"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v14-follow-up-memory"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -85,6 +85,7 @@ class ChatBot:
         "pengobatannya", "terapinya", "diagnosisnya", "penyebabnya",
         "gejalanya", "risikonya", "dampaknya", "pencegahannya",
         "menggunakannya", "memakainya", "penggunaannya", "pemakaiannya",
+        "keamanannya", "dosisnya", "efek sampingnya", "interaksinya",
     )
 
     FOLLOW_UP_INTENT_KEYWORDS = (
@@ -114,6 +115,11 @@ class ChatBot:
         "menstruasi", "perdarahan", "inflamasi", "anti inflamasi",
         "analgesik", "kunyit", "kunyit asam", "curcuma", "curcumin",
         "kurkumin", "jahe", "ginger", "ramuan",
+    )
+
+    HERBAL_ALTERNATIVE_SOURCE_KEYWORDS = (
+        "kunyit", "curcuma", "curcumin", "kurkumin", "jahe", "ginger",
+        "ramuan", "aplikasi_herbal", "herbal_umum", "jamu_kunyit_asam",
     )
 
     HERBAL_SIGNAL_KEYWORDS = (
@@ -593,8 +599,10 @@ class ChatBot:
             f"{question} terapi medis klinis berbasis bukti dulu herbal alami "
             "tradisional jamu fitoterapi suplemen komplementer tambahan "
             "penanganan gejala nyeri haid dismenore inflamasi kram menstruasi "
-            "kunyit asam curcuma longa kurkumin curcumin jahe ramuan herbal "
-            f"anti-inflammatory antioxidant {' '.join(condition_terms)}"
+            "anti inflamasi anti nyeri analgesik kunyit asam curcuma longa "
+            "kurkumin curcumin jahe zingiber officinale ramuan herbal jamu "
+            "aplikasi herbal umum antioxidant phytotherapy "
+            f"{' '.join(condition_terms)}"
         )
 
     def _build_contextual_question(self, question: str, chat_history=None) -> str:
@@ -710,7 +718,8 @@ class ChatBot:
                 for keyword in (
                     "gejala", "nyeri", "sakit", "dismenore", "haid",
                     "menstruasi", "perdarahan", "kram", "inflamasi",
-                    "penanganan",
+                    "penanganan", "anti nyeri", "antiinflamasi",
+                    "anti inflamasi",
                 )
             )
             if any(keyword in source_lower for keyword in ("herbal", "jamu", "mahkota")) and not is_adjacent_topic:
@@ -721,10 +730,16 @@ class ChatBot:
             if explicit_mahkota_intent and ("mahkota" in searchable_text or "phaleria macrocarpa" in searchable_text):
                 score += 20
             elif not explicit_mahkota_intent and any(keyword in source_lower for keyword in ("mahkota", "phaleria")):
-                score -= 8
+                score -= 18
+            if not explicit_mahkota_intent:
+                score += sum(4 for keyword in self.HERBAL_SYMPTOM_CONTEXT_KEYWORDS if keyword in searchable_text)
+                if any(keyword in source_lower for keyword in self.HERBAL_ALTERNATIVE_SOURCE_KEYWORDS):
+                    score += 24
+                if any(keyword in searchable_text for keyword in ("curcuma", "curcumin", "kurkumin", "kunyit", "jahe", "ginger")):
+                    score += 12
             if symptom_herbal_intent:
                 score += sum(5 for keyword in self.HERBAL_SYMPTOM_CONTEXT_KEYWORDS if keyword in searchable_text)
-                if any(keyword in source_lower for keyword in ("kunyit", "ramuan", "aplikasi_herbal", "herbal_umum")):
+                if any(keyword in source_lower for keyword in self.HERBAL_ALTERNATIVE_SOURCE_KEYWORDS):
                     score += 16
             if "endometriosis" in searchable_text:
                 score += 8
@@ -929,9 +944,13 @@ class ChatBot:
                         "bukti, keamanan, efek samping, interaksi obat/terapi hormonal, kualitas "
                         "produk, dan perlunya konsultasi tenaga kesehatan. Jika beberapa sumber "
                         "herbal relevan tersedia, gunakan variasi sumber yang relevan terutama "
-                        "untuk penanganan gejala seperti nyeri haid/dismenore; jangan hanya "
-                        "mengulang satu jurnal atau satu herbal kecuali pengguna memang menyebut "
-                        "herbal tersebut. Jangan membuat herbal terlihat sebagai terapi utama."
+                        "untuk potensi antiinflamasi dan anti-nyeri seperti kunyit/kurkumin, "
+                        "kunyit asam, jahe, atau ramuan herbal bila ada dalam konteks. Jangan "
+                        "menyebut mahkota dewa sebagai satu-satunya contoh kecuali pengguna "
+                        "memang bertanya khusus tentang mahkota dewa/Phaleria macrocarpa. Bila "
+                        "mahkota dewa muncul di konteks tetapi pengguna tidak menyebutnya, "
+                        "sebutkan hanya jika disandingkan dengan opsi herbal lain yang relevan. "
+                        "Jangan membuat herbal terlihat sebagai terapi utama."
                     )
             treatment_instruction = ""
             clinical_treatment_intent = (
@@ -1038,12 +1057,14 @@ class ChatBot:
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
-                            "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain. "
+                            "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain, tetapi "
+                            "jangan menjadikannya contoh tunggal bila pengguna tidak menanyakannya. "
                             "Untuk pertanyaan herbal, tetap awali dengan posisi terapi medis klinis "
                             "sebagai perawatan utama, lalu bahas herbal sebagai komplementer sesuai "
-                            "intent pengguna; untuk penanganan gejala, prioritaskan sumber herbal "
-                            "yang membahas gejala seperti nyeri haid/dismenore bila tersedia dan "
-                            "jangan hanya berfokus pada mahkota dewa kecuali pengguna menyebutnya. "
+                            "intent pengguna; untuk gejala, antiinflamasi, atau anti-nyeri, prioritaskan "
+                            "sumber herbal yang membahas kunyit/kurkumin, kunyit asam, jahe, atau "
+                            "ramuan herbal bila tersedia, dan jangan hanya berfokus pada mahkota dewa "
+                            "kecuali pengguna menyebutnya. "
                             "Bila pertanyaan tentang keamanan/pengganti dokter, "
                             "fokuskan pada batas keamanan dan jangan memperpanjang daftar herbal. "
                             "Untuk pertanyaan non-herbal tentang perawatan/pengobatan, jawab dengan "
@@ -1160,19 +1181,27 @@ class ChatBot:
             return ""
 
         parts = []
-        for message in chat_history[-6:]:
+        for message in chat_history[-10:]:
             if not isinstance(message, dict):
                 continue
+            role = str(message.get("role", "message")).lower()
             content = message.get("content", "")
             if content:
-                parts.append(str(content))
+                compact_content = self._normalize_question(str(content))[:900]
+                parts.append(f"{role}: {compact_content}")
         return self._normalize_question(" ".join(parts))
 
     def _last_topic_from_history(self, chat_history) -> str:
         if not chat_history:
             return ""
 
-        for message in reversed(chat_history):
+        user_messages = [
+            message for message in chat_history
+            if isinstance(message, dict) and message.get("role") == "user"
+        ]
+        candidate_messages = user_messages[-5:] if user_messages else chat_history[-10:]
+
+        for message in reversed(candidate_messages):
             if not isinstance(message, dict):
                 continue
             content = self._normalize_question(str(message.get("content", "")))
@@ -1200,6 +1229,57 @@ class ChatBot:
         term = self._extract_follow_up_term(question)
         last_topic = self._last_topic_from_history(chat_history)
         topic = term or last_topic or "endometriosis atau adenomiosis"
+        condition_topic = topic
+        if "herbal" in condition_topic or self._is_herbal_intent(condition_topic):
+            if "endometriosis" in condition_topic and (
+                "adenomiosis" in condition_topic or "adenomyosis" in condition_topic
+            ):
+                condition_topic = "endometriosis atau adenomiosis"
+            elif "endometriosis" in condition_topic:
+                condition_topic = "endometriosis"
+            elif "adenomiosis" in condition_topic or "adenomyosis" in condition_topic:
+                condition_topic = "adenomiosis"
+            else:
+                condition_topic = "endometriosis atau adenomiosis"
+
+        if any(keyword in normalized_question for keyword in ("gejala", "gejalanya")):
+            return f"Apa saja gejala {condition_topic}?"
+
+        if any(
+            keyword in normalized_question
+            for keyword in ("pemeriksaan", "diagnosis", "diagnosisnya", "didiagnosis")
+        ):
+            return f"Apa saja pemeriksaan untuk diagnosis {condition_topic}?"
+
+        if any(
+            keyword in normalized_question
+            for keyword in ("hamil", "kehamilan", "fertilitas", "kesuburan")
+        ):
+            return (
+                f"Bagaimana pilihan terapi {condition_topic} jika pasien ingin hamil "
+                "atau mempertahankan kesuburan?"
+            )
+
+        if any(
+            keyword in normalized_question
+            for keyword in (
+                "efek samping", "efek sampingnya", "aman", "keamanan",
+                "keamanannya", "interaksi", "interaksinya", "dosis", "dosisnya",
+            )
+        ):
+            return (
+                f"Apa saja aspek keamanan, efek samping, dosis, dan interaksi "
+                f"yang perlu diperhatikan pada {topic}?"
+            )
+
+        if any(
+            keyword in normalized_question
+            for keyword in (
+                "terapi", "pengobatan", "pengobatannya", "perawatan",
+                "penanganan",
+            )
+        ):
+            return f"Bagaimana pilihan terapi atau pengobatan untuk {topic}?"
 
         if "herbal" in topic or self._is_herbal_intent(topic):
             if any(
@@ -1242,12 +1322,21 @@ class ChatBot:
 
         return f"Dalam konteks {topic}, {question}"
 
+    def _has_explicit_condition_scope(self, question: str) -> bool:
+        normalized_question = self._normalize_question(question)
+        return self._contains_any_keyword(
+            normalized_question,
+            self.CONDITION_SCOPE_KEYWORDS,
+        )
+
     def _is_contextual_follow_up(self, question: str, chat_history=None) -> bool:
         normalized_question = self._normalize_question(question)
         term = self._extract_follow_up_term(question)
         history_text = self._history_text(chat_history)
         if not history_text or not self._is_in_medical_scope(history_text):
             return False
+
+        has_explicit_condition = self._has_explicit_condition_scope(question)
 
         if term and len(term) >= 3:
             if term in history_text or self._is_in_medical_scope(term):
@@ -1262,8 +1351,11 @@ class ChatBot:
             self.FOLLOW_UP_INTENT_KEYWORDS,
         )
 
-        if has_reference or has_follow_up_intent:
+        if has_reference:
             return len(normalized_question.split()) <= 14
+
+        if has_follow_up_intent and not has_explicit_condition:
+            return len(normalized_question.split()) <= 10
 
         return False
 

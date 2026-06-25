@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v11-clinical-treatment-first"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v12-clinical-treatment-detail"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -138,7 +138,9 @@ class ChatBot:
         "tatalaksana", "penatalaksanaan", "terapi", "pengobatan",
         "medikamentosa", "hormonal", "oains", "nsaid", "progestin",
         "lng-ius", "levonorgestrel", "gnrh", "histerektomi", "operatif",
-        "operasi", "konservatif", "klinis", "guideline", "evidence",
+        "operasi", "pembedahan", "laparoskopi", "eksisi", "ablasi",
+        "konservatif", "klinis", "guideline", "evidence", "fisioterapi",
+        "terapi fisik", "pelvic floor", "rehabilitasi",
     )
 
     INFERTILITY_CONTEXT_KEYWORDS = (
@@ -530,6 +532,17 @@ class ChatBot:
         normalized_question = self._normalize_question(question)
         return self._contains_any_keyword(normalized_question, self.HERBAL_INTENT_KEYWORDS)
 
+    def _is_treatment_intent(self, question: str) -> bool:
+        normalized_question = self._normalize_question(question)
+        return any(
+            keyword in normalized_question
+            for keyword in (
+                "pengobatan", "pengobatannya", "terapi", "terapinya",
+                "tatalaksana", "penanganan", "perawatan", "pembedahan",
+                "operasi",
+            )
+        )
+
     def _is_herbal_safety_intent(self, question: str) -> bool:
         normalized_question = self._normalize_question(question)
         return self._is_herbal_intent(question) and any(
@@ -543,21 +556,19 @@ class ChatBot:
     def _build_retrieval_query(self, question: str) -> str:
         question = self._split_contextual_question(question)[0]
         normalized_question = self._normalize_question(question)
-        treatment_intent = any(
-            keyword in normalized_question
-            for keyword in (
-                "pengobatan", "pengobatannya", "terapi", "terapinya",
-                "tatalaksana", "penanganan", "perawatan",
-            )
-        )
+        treatment_intent = self._is_treatment_intent(question)
 
         if not self._is_herbal_intent(question):
             if treatment_intent:
                 return (
                     f"{question} tatalaksana klinis berbasis bukti terapi medis "
-                    "obat anti nyeri oains nsaid terapi hormonal progestin "
-                    "lng-ius levonorgestrel gnrh tindakan konservatif operasi "
-                    "histerektomi guideline dokter spesialis"
+                    "endometriosis adenomiosis obat anti nyeri oains nsaid "
+                    "terapi hormonal kontrasepsi kombinasi progestin dienogest "
+                    "lng-ius levonorgestrel gnrh agonist antagonist aromatase "
+                    "inhibitor terapi fisik fisioterapi panggul pelvic floor "
+                    "tindakan konservatif laparoskopi eksisi ablasi adhesiolisis "
+                    "adenomiomektomi embolisasi histerektomi pembedahan guideline "
+                    "dokter spesialis"
                 )
             return question
 
@@ -654,13 +665,7 @@ class ChatBot:
             if any(keyword in searchable_text for keyword in ("fertilitas", "infertilitas", "ivf", "treatment", "tatalaksana")):
                 score -= 6
 
-        has_treatment_intent = any(
-            keyword in normalized_question
-            for keyword in (
-                "pengobatan", "pengobatannya", "terapi", "terapinya",
-                "tatalaksana", "penanganan", "perawatan",
-            )
-        )
+        has_treatment_intent = self._is_treatment_intent(question)
 
         if has_treatment_intent:
             score += sum(5 for keyword in self.TREATMENT_CONTEXT_KEYWORDS if keyword in searchable_text)
@@ -670,6 +675,10 @@ class ChatBot:
                 score += 8
             if any(keyword in searchable_text for keyword in ("oains", "nsaid", "hormonal", "progestin", "lng-ius", "gnrh", "histerektomi")):
                 score += 10
+            if any(keyword in searchable_text for keyword in ("laparoskopi", "laparoscopy", "eksisi", "excision", "ablasi", "ablation", "operative", "surgery")):
+                score += 8
+            if any(keyword in searchable_text for keyword in ("fisioterapi", "terapi fisik", "pelvic floor", "rehabilitasi")):
+                score += 8
             if any(keyword in searchable_text for keyword in ("fertilitas", "infertilitas", "ivf")):
                 score -= 5
             if not self._is_herbal_intent(question):
@@ -925,21 +934,32 @@ class ChatBot:
                         "herbal tersebut. Jangan membuat herbal terlihat sebagai terapi utama."
                     )
             treatment_instruction = ""
-            if any(
-                keyword in self._normalize_question(user_question)
-                for keyword in (
-                    "pengobatan", "pengobatannya", "terapi", "terapinya",
-                    "tatalaksana", "penanganan", "perawatan",
-                )
-            ):
+            clinical_treatment_intent = (
+                self._is_treatment_intent(user_question)
+                and not self._is_herbal_intent(user_question)
+            )
+            if self._is_treatment_intent(user_question):
                 treatment_instruction = (
-                    "Untuk pertanyaan perawatan/pengobatan/terapi, susun jawaban dengan hierarki "
-                    "jelas: (1) dahulukan perawatan medis klinis berbasis bukti kedokteran modern "
-                    "dan evaluasi dokter; (2) jelaskan bahwa pilihan dipilih berdasarkan gejala, "
-                    "usia, keparahan, rencana hamil, dan respons terapi; (3) baru setelah itu "
-                    "sebutkan pendekatan komplementer seperti herbal sebagai pendamping bila aman. "
-                    "Jangan membuka jawaban dengan herbal dan jangan memberi kesan herbal lebih "
-                    "utama daripada terapi medis."
+                    "Untuk pertanyaan perawatan/pengobatan/terapi, jawaban utama harus spesifik "
+                    "dan menyeluruh tentang tatalaksana klinis berbasis bukti. Susun dengan urutan: "
+                    "(1) evaluasi dokter dan tujuan terapi; (2) obat nyeri/antiinflamasi seperti "
+                    "OAINS/NSAID bila sesuai; (3) terapi hormonal, misalnya kontrasepsi hormonal, "
+                    "progestin/dienogest, LNG-IUS, agonis/antagonis GnRH, dan opsi lain yang "
+                    "didukung konteks; (4) terapi fisik atau rehabilitasi panggul sebagai dukungan "
+                    "gejala nyeri bila relevan; (5) prosedur atau pembedahan, misalnya laparoskopi "
+                    "eksisi/ablasi untuk endometriosis, tindakan konservatif pada adenomiosis, "
+                    "embolisasi/adenomiomektomi bila sesuai, dan histerektomi sebagai terapi definitif "
+                    "adenomiosis pada pasien yang tidak merencanakan kehamilan; (6) pertimbangan "
+                    "fertilitas dan rencana hamil. Pendekatan komplementer seperti herbal hanya boleh "
+                    "disebut singkat di akhir sebagai pendamping bila pengguna menanyakannya atau "
+                    "bila perlu sebagai catatan keamanan, bukan sebagai bagian utama."
+                )
+            if clinical_treatment_intent:
+                treatment_instruction += (
+                    " Karena pengguna menanyakan perawatan/pengobatan umum dan tidak meminta herbal, "
+                    "jangan membahas daftar herbal, jamu, atau suplemen. Jika menyebut komplementer, "
+                    "cukup satu kalimat singkat bahwa pendekatan tersebut tidak menggantikan terapi "
+                    "klinis dan perlu dikonsultasikan."
                 )
             intent_instruction = ""
             if self._normalize_question(user_question).startswith("apa itu"):
@@ -991,10 +1011,12 @@ class ChatBot:
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
                             "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
                             "Untuk pertanyaan perawatan, pengobatan, terapi, atau tatalaksana, "
-                            "selalu dahulukan pilihan medis klinis berbasis bukti kedokteran modern "
-                            "dan evaluasi dokter. Pendekatan komplementer seperti herbal hanya boleh "
-                            "dibahas setelah terapi medis, sebagai pendamping, bukan pengganti atau "
-                            "terapi utama. Jika pengguna menanyakan istilah "
+                            "selalu jadikan pilihan medis klinis berbasis bukti kedokteran modern "
+                            "sebagai isi utama: obat nyeri, terapi hormonal, terapi fisik/rehabilitasi "
+                            "panggul bila relevan, prosedur konservatif, dan pembedahan. Pendekatan "
+                            "komplementer seperti herbal hanya boleh dibahas setelah terapi medis, "
+                            "secara singkat, sebagai pendamping, bukan pengganti atau terapi utama. "
+                            "Jika pengguna menanyakan istilah "
                             "yang muncul pada jawaban sebelumnya tetapi istilah itu tidak jelas atau tidak "
                             "didukung konteks sumber, akui ketidakpastian dan jelaskan kemungkinan salah "
                             "tulis/istilah tidak umum; jangan membuat klaim manfaat baru. Jika konteks "
@@ -1024,8 +1046,10 @@ class ChatBot:
                             "jangan hanya berfokus pada mahkota dewa kecuali pengguna menyebutnya. "
                             "Bila pertanyaan tentang keamanan/pengganti dokter, "
                             "fokuskan pada batas keamanan dan jangan memperpanjang daftar herbal. "
-                            "Untuk pertanyaan non-herbal, jawab dalam "
-                            "2-3 paragraf yang mudah dipahami. Akhiri dengan anjuran "
+                            "Untuk pertanyaan non-herbal tentang perawatan/pengobatan, jawab dengan "
+                            "bagian klinis yang jelas dan cukup lengkap, bukan daftar herbal. Untuk "
+                            "pertanyaan non-herbal lain, jawab dalam 2-3 paragraf yang mudah dipahami. "
+                            "Akhiri dengan anjuran "
                             "untuk konsultasi dokter spesialis."
                         )
                     }

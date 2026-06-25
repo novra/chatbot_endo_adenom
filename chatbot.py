@@ -33,7 +33,7 @@ class ChatBot:
     4. Proper HF token authentication
     5. Dynamic Multiple model fallback strategy (FIXED)
     """
-    GUARDRAIL_VERSION = "medical-scope-guardrail-v15-condition-memory"
+    GUARDRAIL_VERSION = "medical-scope-guardrail-v18-longer-chat-memory"
     HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 
     SCOPE_REJECTION_MESSAGE = (
@@ -69,7 +69,7 @@ class ChatBot:
     HERBAL_INTENT_KEYWORDS = (
         "herbal", "alami", "tradisional", "jamu", "rempah", "tanaman obat",
         "fitoterapi", "suplemen", "komplementer", "non farmakologis",
-        "non-farmakologis",
+        "non-farmakologis", "konvensional",
     )
 
     FOLLOW_UP_PATTERNS = (
@@ -86,12 +86,14 @@ class ChatBot:
         "gejalanya", "risikonya", "dampaknya", "pencegahannya",
         "menggunakannya", "memakainya", "penggunaannya", "pemakaiannya",
         "keamanannya", "dosisnya", "efek sampingnya", "interaksinya",
+        "yang perlu diperhatikan",
     )
 
     FOLLOW_UP_INTENT_KEYWORDS = (
         "lanjut", "lanjutkan", "lebih lanjut", "jelaskan lagi", "detail",
         "lebih detail", "bagaimana", "apakah", "kenapa", "mengapa",
         "berapa", "apa saja", "contohnya", "contoh", "bedanya",
+        "perhatikan",
     )
 
     HERBAL_TERM_ALIASES = {
@@ -596,12 +598,13 @@ class ChatBot:
             )
 
         return (
-            f"{question} terapi medis klinis berbasis bukti dulu herbal alami "
-            "tradisional jamu fitoterapi suplemen komplementer tambahan "
+            f"{question} herbal alami tradisional jamu fitoterapi suplemen "
+            "komplementer konvensional pendamping "
             "penanganan gejala nyeri haid dismenore inflamasi kram menstruasi "
             "anti inflamasi anti nyeri analgesik kunyit asam curcuma longa "
             "kurkumin curcumin jahe zingiber officinale ramuan herbal jamu "
-            "aplikasi herbal umum antioxidant phytotherapy "
+            "aplikasi herbal umum mahkota dewa phaleria macrocarpa flavonoid "
+            "antioxidant phytotherapy variasi herbal "
             f"{' '.join(condition_terms)}"
         )
 
@@ -614,7 +617,7 @@ class ChatBot:
             chat_history,
         )
         history_text = self._history_text(chat_history)
-        context_excerpt = history_text[-600:]
+        context_excerpt = history_text[-1200:]
         return (
             f"{standalone_question}\n\n"
             f"Pertanyaan asli pengguna: {question}\n"
@@ -730,7 +733,7 @@ class ChatBot:
             if explicit_mahkota_intent and ("mahkota" in searchable_text or "phaleria macrocarpa" in searchable_text):
                 score += 20
             elif not explicit_mahkota_intent and any(keyword in source_lower for keyword in ("mahkota", "phaleria")):
-                score -= 18
+                score += 8
             if not explicit_mahkota_intent:
                 score += sum(4 for keyword in self.HERBAL_SYMPTOM_CONTEXT_KEYWORDS if keyword in searchable_text)
                 if any(keyword in source_lower for keyword in self.HERBAL_ALTERNATIVE_SOURCE_KEYWORDS):
@@ -936,28 +939,25 @@ class ChatBot:
                 else:
                     herbal_instruction = (
                         "Pertanyaan pengguna meminta pendekatan herbal/komplementer. "
-                        "Tetap mulai dengan prinsip bahwa perawatan utama adalah diagnosis dan "
-                        "terapi medis klinis berbasis bukti dari dokter, misalnya kontrol nyeri, "
-                        "terapi hormonal, LNG-IUS/GnRH, tindakan konservatif, atau operasi bila "
-                        "sesuai konteks. Setelah itu bahas herbal hanya sebagai komplementer/"
-                        "pendamping untuk gejala, bukan pengganti terapi medis. Jelaskan batas "
-                        "bukti, keamanan, efek samping, interaksi obat/terapi hormonal, kualitas "
-                        "produk, dan perlunya konsultasi tenaga kesehatan. Jika beberapa sumber "
-                        "herbal relevan tersedia, gunakan variasi sumber yang relevan terutama "
-                        "untuk potensi antiinflamasi dan anti-nyeri seperti kunyit/kurkumin, "
-                        "kunyit asam, jahe, atau ramuan herbal bila ada dalam konteks. Jangan "
-                        "menyebut mahkota dewa sebagai satu-satunya contoh kecuali pengguna "
-                        "memang bertanya khusus tentang mahkota dewa/Phaleria macrocarpa. Bila "
-                        "mahkota dewa muncul di konteks tetapi pengguna tidak menyebutnya, "
-                        "sebutkan hanya jika disandingkan dengan opsi herbal lain yang relevan. "
-                        "Jangan membuat herbal terlihat sebagai terapi utama."
+                        "Fokuskan jawaban pada terapi herbal/komplementer yang relevan dari konteks, "
+                        "terutama potensi untuk gejala seperti nyeri, dismenore, dan inflamasi. "
+                        "Jangan menjadikan terapi klinis seperti hormonal, prosedur, atau pembedahan "
+                        "sebagai isi utama pada pertanyaan ini. Terapi klinis boleh disebut hanya "
+                        "singkat sebagai batas keamanan bahwa herbal/komplementer bukan pengganti "
+                        "diagnosis dan terapi dokter. Jelaskan batas bukti, keamanan, efek samping, "
+                        "interaksi obat/terapi hormonal, kualitas produk, dan perlunya konsultasi "
+                        "tenaga kesehatan. Jika beberapa sumber herbal relevan tersedia, gunakan "
+                        "variasi sumber seperti kunyit/kurkumin, kunyit asam, jahe, mahkota dewa/"
+                        "Phaleria macrocarpa, atau ramuan herbal bila ada dalam konteks. Bila "
+                        "mahkota dewa muncul di konteks, tetap sebutkan sebagai salah satu opsi "
+                        "potensial, tetapi selalu sandingkan dengan herbal lain yang relevan."
                     )
             treatment_instruction = ""
             clinical_treatment_intent = (
                 self._is_treatment_intent(user_question)
                 and not self._is_herbal_intent(user_question)
             )
-            if self._is_treatment_intent(user_question):
+            if clinical_treatment_intent:
                 treatment_instruction = (
                     "Untuk pertanyaan perawatan/pengobatan/terapi, jawaban utama harus spesifik "
                     "dan menyeluruh tentang tatalaksana klinis berbasis bukti. Susun dengan urutan: "
@@ -973,7 +973,6 @@ class ChatBot:
                     "disebut singkat di akhir sebagai pendamping bila pengguna menanyakannya atau "
                     "bila perlu sebagai catatan keamanan, bukan sebagai bagian utama."
                 )
-            if clinical_treatment_intent:
                 treatment_instruction += (
                     " Karena pengguna menanyakan perawatan/pengobatan umum dan tidak meminta herbal, "
                     "jangan membahas daftar herbal, jamu, atau suplemen. Jika menyebut komplementer, "
@@ -1030,11 +1029,13 @@ class ChatBot:
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
                             "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
                             "Untuk pertanyaan perawatan, pengobatan, terapi, atau tatalaksana, "
-                            "selalu jadikan pilihan medis klinis berbasis bukti kedokteran modern "
-                            "sebagai isi utama: obat nyeri, terapi hormonal, terapi fisik/rehabilitasi "
-                            "panggul bila relevan, prosedur konservatif, dan pembedahan. Pendekatan "
-                            "komplementer seperti herbal hanya boleh dibahas setelah terapi medis, "
-                            "secara singkat, sebagai pendamping, bukan pengganti atau terapi utama. "
+                            "ikuti intent pengguna. Jika pengguna bertanya umum tentang perawatan "
+                            "atau pengobatan, jadikan pilihan medis klinis berbasis bukti sebagai "
+                            "isi utama: obat nyeri, terapi hormonal, terapi fisik/rehabilitasi panggul "
+                            "bila relevan, prosedur konservatif, dan pembedahan. Jika pengguna jelas "
+                            "bertanya tentang herbal, terapi konvensional/tradisional, atau pengobatan "
+                            "komplementer, fokuskan jawaban pada pendekatan herbal/komplementer dan "
+                            "sebutkan terapi klinis hanya singkat sebagai batas keamanan, bukan isi utama. "
                             "Jika pengguna menanyakan istilah "
                             "yang muncul pada jawaban sebelumnya tetapi istilah itu tidak jelas atau tidak "
                             "didukung konteks sumber, akui ketidakpastian dan jelaskan kemungkinan salah "
@@ -1059,11 +1060,12 @@ class ChatBot:
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
                             "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain, tetapi "
                             "jangan menjadikannya contoh tunggal bila pengguna tidak menanyakannya. "
-                            "Untuk pertanyaan herbal, tetap awali dengan posisi terapi medis klinis "
-                            "sebagai perawatan utama, lalu bahas herbal sebagai komplementer sesuai "
-                            "intent pengguna; untuk gejala, antiinflamasi, atau anti-nyeri, prioritaskan "
-                            "sumber herbal yang membahas kunyit/kurkumin, kunyit asam, jahe, atau "
-                            "ramuan herbal bila tersedia, dan jangan hanya berfokus pada mahkota dewa "
+                            "Untuk pertanyaan herbal/komplementer/konvensional, fokuskan jawaban pada "
+                            "pendekatan tersebut sesuai intent pengguna; untuk gejala, antiinflamasi, "
+                            "atau anti-nyeri, prioritaskan "
+                            "sumber herbal yang membahas kunyit/kurkumin, kunyit asam, jahe, mahkota "
+                            "dewa, atau ramuan herbal bila tersedia. Mahkota dewa tetap boleh muncul "
+                            "sebagai salah satu opsi, tetapi jangan hanya berfokus pada mahkota dewa "
                             "kecuali pengguna menyebutnya. "
                             "Bila pertanyaan tentang keamanan/pengganti dokter, "
                             "fokuskan pada batas keamanan dan jangan memperpanjang daftar herbal. "
@@ -1181,7 +1183,7 @@ class ChatBot:
             return ""
 
         parts = []
-        for message in chat_history[-10:]:
+        for message in chat_history[-20:]:
             if not isinstance(message, dict):
                 continue
             role = str(message.get("role", "message")).lower()
@@ -1199,7 +1201,7 @@ class ChatBot:
             message for message in chat_history
             if isinstance(message, dict) and message.get("role") == "user"
         ]
-        candidate_messages = user_messages[-5:] if user_messages else chat_history[-10:]
+        candidate_messages = user_messages[-10:] if user_messages else chat_history[-20:]
 
         for message in reversed(candidate_messages):
             if not isinstance(message, dict):
@@ -1232,7 +1234,7 @@ class ChatBot:
             message for message in chat_history
             if isinstance(message, dict) and message.get("role") == "user"
         ]
-        candidate_messages = user_messages[-6:] if user_messages else chat_history[-10:]
+        candidate_messages = user_messages[-10:] if user_messages else chat_history[-20:]
 
         for message in reversed(candidate_messages):
             if not isinstance(message, dict):
@@ -1300,12 +1302,19 @@ class ChatBot:
             for keyword in (
                 "efek samping", "efek sampingnya", "aman", "keamanan",
                 "keamanannya", "interaksi", "interaksinya", "dosis", "dosisnya",
+                "perhatikan",
             )
         ):
             return (
                 f"Apa saja aspek keamanan, efek samping, dosis, dan interaksi "
                 f"yang perlu diperhatikan pada {topic}?"
             )
+
+        if any(
+            keyword in normalized_question
+            for keyword in ("pencegahan", "pencegahannya", "cegah", "mencegah")
+        ):
+            return f"Bagaimana pencegahan atau pengurangan risiko kekambuhan/gejala pada {condition_topic}?"
 
         if self._is_herbal_intent(question):
             return (

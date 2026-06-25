@@ -120,7 +120,7 @@ def render_chat_page():
 
     # Input User
     if user_input := st.chat_input("Contoh: Apa bedanya adenomiosis dengan endometriosis?"):
-        chat_history = st.session_state.messages[-10:]
+        chat_history = st.session_state.messages[-20:]
         st.session_state.messages.append({"role": "user", "content": user_input})
         with st.chat_message("user"):
             st.markdown(user_input)

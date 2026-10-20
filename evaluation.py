@@ -148,7 +148,7 @@ def load_testsets(paths: list[str], limit: int | None = None) -> list[dict[str, 
     return combined
 
 
-def build_evaluator(token: str, model_name: str):
+def build_evaluator(token: str, model_name: str, max_tokens: int = 4096):
     from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_openai import ChatOpenAI
 
@@ -156,10 +156,12 @@ def build_evaluator(token: str, model_name: str):
         model=model_name,
         api_key=token,
         base_url=HF_ROUTER_BASE_URL,
-        temperature=0.1,
-        max_tokens=1024,
-        timeout=180,
-        max_retries=3,
+        # RAGAS requires strict structured output. Deterministic decoding and
+        # a larger output budget reduce malformed/truncated JSON responses.
+        temperature=0,
+        max_tokens=max_tokens,
+        timeout=300,
+        max_retries=4,
     )
     embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBEDDING_MODEL)
     return llm, embeddings
@@ -266,11 +268,23 @@ def collect_rag_outputs(
             question in existing_by_question
             and is_failed_chatbot_response(existing_by_question[question])
         )
-        if question in existing_by_question and not has_conversation and not cached_answer_failed:
+        if question in existing_by_question and not cached_answer_failed:
             cached_record = existing_by_question[question]
             cached_record["contexts"] = json.loads(str(cached_record["contexts"]))
             cached_record.setdefault("category", item.get("category", infer_category(question)))
             cached_record.setdefault("question_type", item.get("question_type", "unspecified"))
+            if has_conversation:
+                # Rebuild the conversation state from cached turns so later
+                # uncached follow-ups still receive the correct history.
+                chat_history.extend(
+                    [
+                        {"role": "user", "content": question},
+                        {
+                            "role": "assistant",
+                            "content": str(cached_record.get("answer", "")),
+                        },
+                    ]
+                )
             records.append(cached_record)
             print("Menggunakan jawaban dari checkpoint.")
             continue
@@ -416,9 +430,21 @@ def run_ragas(
             existing_scores["category"] = existing_scores["question"].map(infer_category)
         if "question_type" not in existing_scores.columns:
             existing_scores["question_type"] = "unspecified"
-        completed_questions = set(existing_scores["question"].astype(str))
-        score_frames.append(existing_scores)
-        print(f"Melanjutkan {len(completed_questions)} skor dari checkpoint.")
+        for metric in METRIC_COLUMNS:
+            if metric not in existing_scores.columns:
+                existing_scores[metric] = float("nan")
+
+        # A row is complete only when every requested metric parsed
+        # successfully. Partial rows are intentionally retried on resume.
+        complete_mask = existing_scores[list(METRIC_COLUMNS)].notna().all(axis=1)
+        complete_scores = existing_scores.loc[complete_mask].copy()
+        completed_questions = set(complete_scores["question"].astype(str))
+        if not complete_scores.empty:
+            score_frames.append(complete_scores)
+        print(
+            f"Melanjutkan {len(completed_questions)} skor lengkap dari checkpoint; "
+            f"{int((~complete_mask).sum())} skor parsial/NaN akan diulang."
+        )
 
     pending_df = dataset_df[~dataset_df["question"].isin(completed_questions)].reset_index(drop=True)
     total_batches = (len(pending_df) + batch_size - 1) // batch_size
@@ -514,9 +540,15 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--limit", type=int, default=None, help="Batasi jumlah pertanyaan.")
     parser.add_argument("--output-dir", default=DEFAULT_OUTPUT_DIR, help="Folder output.")
     parser.add_argument("--batch-size", type=int, default=5, help="Pertanyaan per batch RAGAS.")
-    parser.add_argument("--timeout", type=int, default=180, help="Timeout tiap pekerjaan RAGAS.")
-    parser.add_argument("--max-retries", type=int, default=2, help="Retry tiap pekerjaan RAGAS.")
-    parser.add_argument("--max-workers", type=int, default=4, help="Jumlah worker paralel RAGAS.")
+    parser.add_argument("--timeout", type=int, default=300, help="Timeout tiap pekerjaan RAGAS.")
+    parser.add_argument("--max-retries", type=int, default=3, help="Retry tiap pekerjaan RAGAS.")
+    parser.add_argument("--max-workers", type=int, default=2, help="Jumlah worker paralel RAGAS.")
+    parser.add_argument(
+        "--evaluator-max-tokens",
+        type=int,
+        default=4096,
+        help="Batas token keluaran evaluator agar JSON RAGAS tidak terpotong.",
+    )
     parser.add_argument("--resume", action="store_true", help="Lanjutkan dari checkpoint output.")
     parser.add_argument(
         "--answer-retries",
@@ -546,7 +578,11 @@ def main() -> None:
         raise RuntimeError("ChatBot gagal diinisialisasi. RAG chain belum tersedia.")
 
     testset = load_testsets(args.testset, args.limit)
-    llm, embeddings = build_evaluator(token, args.evaluator_model)
+    llm, embeddings = build_evaluator(
+        token,
+        args.evaluator_model,
+        args.evaluator_max_tokens,
+    )
     dataset_df = collect_rag_outputs(
         chatbot,
         testset,

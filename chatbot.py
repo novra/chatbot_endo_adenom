@@ -961,7 +961,9 @@ class ChatBot:
                 temperature=0.4,
                 top_p=0.9
             )
-            return response.choices[0].message.content.strip()
+            message = response.choices[0].message
+            continuation = message.content or getattr(message, "reasoning_content", "")
+            return continuation.strip() if continuation else ""
 
         def call_llm(inputs):
             """Call LLM using serverless inference with dynamic model parameter."""
@@ -1376,6 +1378,21 @@ class ChatBot:
 
         if any(keyword in normalized_question for keyword in ("gejala", "gejalanya")):
             return f"Apa saja gejala {condition_topic}?"
+
+        # Preserve the newest user intent. A phrase such as "jika diagnosisnya
+        # sudah ditegakkan, apakah perlu operasi?" mentions diagnosis only as
+        # context; the requested information is surgical treatment.
+        if any(
+            keyword in normalized_question
+            for keyword in (
+                "operasi", "operasinya", "pembedahan", "bedah",
+                "histerektomi", "laparoskopi",
+            )
+        ):
+            return (
+                f"Apakah semua pasien {condition_topic} memerlukan operasi, "
+                "dan kapan operasi dipertimbangkan?"
+            )
 
         if any(
             keyword in normalized_question

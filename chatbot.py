@@ -319,16 +319,18 @@ class ChatBot:
         print(f"✅ Hugging Face router client initialized: {self.HF_ROUTER_BASE_URL}")
         
         # FIX: Try models in order (Memprioritaskan 3.1 dan Mistral)
-        models_to_try = [
+        self.models_to_try = [
             "Qwen/Qwen3.6-35B-A3B:fastest",
             "google/gemma-3-12b-it:fastest",
             "microsoft/Phi-3.5-mini-instruct:fastest",
             "meta-llama/Llama-3.2-1B-Instruct:fastest",
         ]
+        self.primary_model_name = self.models_to_try[0]
+        self.model_fallback_rank = None
         
         self.model_name = None
         
-        for model_name in models_to_try:
+        for model_index, model_name in enumerate(self.models_to_try):
             try:
                 print(f"🔄 Testing model: {model_name}")
                 # Test the model with a simple query
@@ -340,6 +342,7 @@ class ChatBot:
                 
                 # If successful, use this model
                 self.model_name = model_name
+                self.model_fallback_rank = model_index
                 print(f"✅ Successfully connected to: {model_name}")
                 return
                 
@@ -351,6 +354,7 @@ class ChatBot:
                 if "loading" in error_str or "503" in error_str or "unavailable" in error_str:
                     print(f"⏳ {model_name} is loading, will use on first query")
                     self.model_name = model_name
+                    self.model_fallback_rank = model_index
                     return
                 
                 # JIKA model tidak disupport, biarkan loop berjalan ke model berikutnya
@@ -359,7 +363,18 @@ class ChatBot:
         # Fallback terakhir jika semua gagal tapi tidak crash
         if not self.model_name:
             print("⚠️ No model test successful, defaulting to Qwen")
-            self.model_name = "Qwen/Qwen3.6-35B-A3B:fastest"
+            self.model_name = self.primary_model_name
+            self.model_fallback_rank = 0
+
+    def _generation_metadata(self):
+        """Describe the generator selected during chatbot initialization."""
+        rank = self.model_fallback_rank
+        return {
+            "model": self.model_name,
+            "primary_model": self.primary_model_name,
+            "fallback_rank": rank,
+            "fallback_used": bool(rank is not None and rank > 0),
+        }
 
     def _initialize_chroma(self):
         """Inisialisasi ChromaDB dengan pengecekan folder yang lebih aman untuk Cloud."""
@@ -1619,6 +1634,7 @@ class ChatBot:
                 sources = []
                 source_metadata = {}
             
+            source_metadata["_generation"] = self._generation_metadata()
             return {
                 "answer": answer, 
                 "sources": sources,

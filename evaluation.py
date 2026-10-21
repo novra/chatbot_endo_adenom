@@ -37,7 +37,7 @@ from dotenv import load_dotenv
 
 DEFAULT_TESTSET = "ragas_testset.csv"
 DEFAULT_OUTPUT_DIR = "outputs"
-DEFAULT_EVALUATOR_MODEL = "Qwen/Qwen3.6-35B-A3B:fastest"
+DEFAULT_EVALUATOR_MODEL = "Qwen/Qwen3-4B-Instruct-2507:nscale"
 DEFAULT_EMBEDDING_MODEL = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
 HF_ROUTER_BASE_URL = "https://router.huggingface.co/v1"
 METRIC_COLUMNS = (
@@ -47,6 +47,7 @@ METRIC_COLUMNS = (
     "context_recall",
     "answer_correctness",
 )
+
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -152,6 +153,12 @@ def build_evaluator(token: str, model_name: str, max_tokens: int = 4096):
     from langchain_huggingface import HuggingFaceEmbeddings
     from langchain_openai import ChatOpenAI
 
+    extra_body: dict[str, Any] = {}
+    if model_name.lower().startswith("qwen/"):
+        # Qwen 3.x enables thinking by default. Thinking blocks waste tokens
+        # and are not valid input for RAGAS' Pydantic output parser.
+        extra_body["chat_template_kwargs"] = {"enable_thinking": False}
+
     llm = ChatOpenAI(
         model=model_name,
         api_key=token,
@@ -162,6 +169,10 @@ def build_evaluator(token: str, model_name: str, max_tokens: int = 4096):
         max_tokens=max_tokens,
         timeout=300,
         max_retries=4,
+        # Complement RAGAS' Pydantic prompts with provider-level JSON mode so
+        # the response contains no prose or Markdown fences.
+        model_kwargs={"response_format": {"type": "json_object"}},
+        extra_body=extra_body,
     )
     embeddings = HuggingFaceEmbeddings(model_name=DEFAULT_EMBEDDING_MODEL)
     return llm, embeddings
@@ -318,7 +329,9 @@ def collect_rag_outputs(
                 ]
             )
 
-        guardrail = response.get("metadata", {}).get("guardrail", {})
+        response_metadata = response.get("metadata", {})
+        guardrail = response_metadata.get("guardrail", {})
+        generation = response_metadata.get("_generation", {})
 
         records.append(
             {
@@ -330,6 +343,10 @@ def collect_rag_outputs(
                 "question_type": item.get("question_type", "unspecified"),
                 "conversation_id": history_key if has_conversation else "",
                 "guardrail_blocked": bool(guardrail.get("blocked", False)),
+                "generator_model": generation.get("model", ""),
+                "generator_primary_model": generation.get("primary_model", ""),
+                "generator_fallback_rank": generation.get("fallback_rank", ""),
+                "generator_fallback_used": generation.get("fallback_used", False),
                 "sources": "; ".join(
                     sorted(
                         {
@@ -356,46 +373,45 @@ def run_ragas_batch(
     max_retries: int,
     max_workers: int,
 ) -> pd.DataFrame:
-    from datasets import Dataset, Features, Sequence, Value
-    from ragas import evaluate
+    from ragas import EvaluationDataset, evaluate
+    from ragas.embeddings import LangchainEmbeddingsWrapper
+    from ragas.llms import LangchainLLMWrapper
     from ragas.run_config import RunConfig
     from ragas.metrics import (
-        answer_correctness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        faithfulness,
+        AnswerCorrectness,
+        Faithfulness,
+        LLMContextPrecisionWithReference,
+        LLMContextRecall,
+        ResponseRelevancy,
     )
 
-    dataset = Dataset.from_dict(
-        {
-            "question": dataset_df["question"].astype(str).tolist(),
-            "answer": dataset_df["answer"].astype(str).tolist(),
-            "contexts": dataset_df["contexts"].tolist(),
-            "ground_truth": dataset_df["ground_truth"].astype(str).tolist(),
-        },
-        features=Features(
+    dataset = EvaluationDataset.from_list(
+        [
             {
-                "question": Value("string"),
-                "answer": Value("string"),
-                "contexts": Sequence(Value("string")),
-                "ground_truth": Value("string"),
+                "user_input": str(row["question"]),
+                "response": str(row["answer"]),
+                "retrieved_contexts": list(row["contexts"]),
+                "reference": str(row["ground_truth"]),
             }
-        ),
+            for _, row in dataset_df.iterrows()
+        ]
     )
+    evaluator_llm = LangchainLLMWrapper(llm)
+    evaluator_embeddings = LangchainEmbeddingsWrapper(embeddings)
     metrics = [
-        faithfulness,
-        answer_relevancy,
-        context_precision,
-        context_recall,
-        answer_correctness,
+        Faithfulness(llm=evaluator_llm),
+        ResponseRelevancy(llm=evaluator_llm, embeddings=evaluator_embeddings),
+        LLMContextPrecisionWithReference(
+            name="context_precision",
+            llm=evaluator_llm,
+        ),
+        LLMContextRecall(llm=evaluator_llm),
+        AnswerCorrectness(llm=evaluator_llm, embeddings=evaluator_embeddings),
     ]
 
     result = evaluate(
         dataset,
         metrics=metrics,
-        llm=llm,
-        embeddings=embeddings,
         run_config=RunConfig(
             timeout=timeout,
             max_retries=max_retries,
@@ -551,6 +567,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--resume", action="store_true", help="Lanjutkan dari checkpoint output.")
     parser.add_argument(
+        "--collect-only",
+        action="store_true",
+        help="Kumpulkan jawaban chatbot dan metadata generator tanpa menjalankan RAGAS.",
+    )
+    parser.add_argument(
         "--answer-retries",
         type=int,
         default=2,
@@ -590,6 +611,10 @@ def main() -> None:
         args.resume,
         args.answer_retries,
     )
+    if args.collect_only:
+        dataset_file = Path(args.output_dir) / "ragas_eval_dataset.csv"
+        print(f"\nPengumpulan jawaban selesai: {dataset_file}")
+        return
     score_df = run_ragas(
         dataset_df,
         llm,

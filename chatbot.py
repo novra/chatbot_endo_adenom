@@ -849,7 +849,7 @@ class ChatBot:
 
         return selected
 
-    def _retrieve_relevant_docs(self, question: str, limit: int = 3):
+    def _retrieve_relevant_docs(self, question: str, limit: int = 5):
         question = self._split_contextual_question(question)[0]
         retrieval_query = self._build_retrieval_query(question)
         candidate_docs = self.source_retriever_chain.invoke(retrieval_query)
@@ -859,7 +859,7 @@ class ChatBot:
             reverse=True,
         )
         if self._is_herbal_intent(question):
-            return self._diversify_docs_by_source(ranked_docs, max(limit, 4))
+            return self._diversify_docs_by_source(ranked_docs, max(limit, 5))
         return ranked_docs[:limit]
 
     def _trim_doc_text(self, text: str, question: str, max_chars: int = 900) -> str:
@@ -983,7 +983,7 @@ class ChatBot:
         def call_llm(inputs):
             """Call LLM using serverless inference with dynamic model parameter."""
             # Truncate context
-            max_context_length = 6500
+            max_context_length = 9000
             context = inputs['context'][:max_context_length] if len(inputs['context']) > max_context_length else inputs['context']
             question = inputs['question']
             user_question, history_context = extract_question_and_history(question)
@@ -1124,7 +1124,12 @@ class ChatBot:
                         "content": (
                             "Anda adalah asisten edukasi medis yang hanya membahas adenomyosis "
                             "dan endometriosis. Jawab dalam Bahasa Indonesia dengan jelas dan "
-                            "profesional. Jangan menebak atau menyatakan bahwa pengguna memiliki "
+                            "profesional. Setiap klaim faktual medis dalam jawaban harus dapat "
+                            "ditelusuri secara langsung ke informasi medis yang diberikan dalam "
+                            "prompt ini. Jangan memakai pengetahuan internal untuk melengkapi detail "
+                            "yang tidak tercantum dalam konteks. Jika konteks tidak mendukung suatu "
+                            "bagian pertanyaan, nyatakan singkat bahwa informasi tersebut tidak cukup "
+                            "tersedia; jangan menebak. Jangan menyatakan bahwa pengguna memiliki "
                             "diagnosis, kondisi, tingkat keparahan, atau kebutuhan pengobatan tertentu "
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
                             "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
@@ -1160,6 +1165,11 @@ class ChatBot:
                             f"{intent_instruction}\n\n"
                             f"{follow_up_instruction}\n\n"
                             "Jawab hanya untuk ruang lingkup adenomyosis/endometriosis. "
+                            "Gunakan hanya fakta yang tertulis dalam konteks sumber di atas. "
+                            "Sebelum menyelesaikan jawaban, hapus atau ubah setiap klaim medis yang "
+                            "tidak memiliki dukungan eksplisit dalam konteks. Hindari menambahkan "
+                            "angka, mekanisme, indikasi, manfaat, risiko, atau rekomendasi spesifik "
+                            "yang tidak tercantum dalam konteks. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
                             "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain, tetapi "

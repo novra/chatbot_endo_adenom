@@ -214,7 +214,7 @@ def ask_with_retrieval_trace(
     original_retrieve = chatbot._retrieve_relevant_docs
     retrieval_calls: list[list[Any]] = []
 
-    def traced_retrieve(retrieval_question: str, limit: int = 3):
+    def traced_retrieve(retrieval_question: str, limit: int = 5):
         documents = original_retrieve(retrieval_question, limit=limit)
         retrieval_calls.append(list(documents))
         return documents
@@ -372,6 +372,7 @@ def run_ragas_batch(
     timeout: int,
     max_retries: int,
     max_workers: int,
+    metric_names: tuple[str, ...] = METRIC_COLUMNS,
 ) -> pd.DataFrame:
     from ragas import EvaluationDataset, evaluate
     from ragas.embeddings import LangchainEmbeddingsWrapper
@@ -398,16 +399,26 @@ def run_ragas_batch(
     )
     evaluator_llm = LangchainLLMWrapper(llm)
     evaluator_embeddings = LangchainEmbeddingsWrapper(embeddings)
-    metrics = [
-        Faithfulness(llm=evaluator_llm),
-        ResponseRelevancy(llm=evaluator_llm, embeddings=evaluator_embeddings),
-        LLMContextPrecisionWithReference(
+    metric_registry = {
+        "faithfulness": Faithfulness(llm=evaluator_llm),
+        "answer_relevancy": ResponseRelevancy(
+            llm=evaluator_llm,
+            embeddings=evaluator_embeddings,
+        ),
+        "context_precision": LLMContextPrecisionWithReference(
             name="context_precision",
             llm=evaluator_llm,
         ),
-        LLMContextRecall(llm=evaluator_llm),
-        AnswerCorrectness(llm=evaluator_llm, embeddings=evaluator_embeddings),
-    ]
+        "context_recall": LLMContextRecall(llm=evaluator_llm),
+        "answer_correctness": AnswerCorrectness(
+            llm=evaluator_llm,
+            embeddings=evaluator_embeddings,
+        ),
+    }
+    unknown_metrics = set(metric_names) - set(metric_registry)
+    if unknown_metrics:
+        raise ValueError(f"Metrik RAGAS tidak dikenal: {sorted(unknown_metrics)}")
+    metrics = [metric_registry[name] for name in metric_names]
 
     result = evaluate(
         dataset,
@@ -434,62 +445,101 @@ def run_ragas(
     max_retries: int,
     max_workers: int,
     resume: bool = False,
+    coverage_retry_rounds: int = 2,
 ) -> pd.DataFrame:
-    """Evaluate in bounded batches and checkpoint after every batch."""
+    """Evaluate missing metric cells and checkpoint after every batch.
+
+    RAGAS 0.2 uses ``user_input`` rather than the legacy ``question`` column.
+    Keeping one row per dataset question and retrying each missing metric
+    independently makes resume safe and prevents a timeout in one expensive
+    metric from discarding valid values produced by the other metrics.
+    """
     score_file = Path(output_dir) / "ragas_scores.csv"
-    completed_questions: set[str] = set()
-    score_frames: list[pd.DataFrame] = []
+    score_df = pd.DataFrame(
+        {
+            "user_input": dataset_df["question"].astype(str),
+            "retrieved_contexts": dataset_df["contexts"],
+            "response": dataset_df["answer"].astype(str),
+            "reference": dataset_df["ground_truth"].astype(str),
+            "category": dataset_df["category"].astype(str),
+            "question_type": dataset_df["question_type"].astype(str),
+        }
+    )
+    for metric in METRIC_COLUMNS:
+        score_df[metric] = float("nan")
 
     if resume and score_file.exists():
         existing_scores = pd.read_csv(score_file)
-        if "category" not in existing_scores.columns:
-            existing_scores["category"] = existing_scores["question"].map(infer_category)
-        if "question_type" not in existing_scores.columns:
-            existing_scores["question_type"] = "unspecified"
+        if "user_input" not in existing_scores.columns and "question" in existing_scores.columns:
+            existing_scores = existing_scores.rename(columns={"question": "user_input"})
+        if "user_input" not in existing_scores.columns:
+            raise ValueError(
+                f"Checkpoint {score_file} tidak memiliki kolom user_input/question."
+            )
+        existing_scores = existing_scores.drop_duplicates("user_input", keep="last")
+        existing_scores = existing_scores.set_index("user_input")
+        question_index = score_df["user_input"]
         for metric in METRIC_COLUMNS:
-            if metric not in existing_scores.columns:
-                existing_scores[metric] = float("nan")
-
-        # A row is complete only when every requested metric parsed
-        # successfully. Partial rows are intentionally retried on resume.
-        complete_mask = existing_scores[list(METRIC_COLUMNS)].notna().all(axis=1)
-        complete_scores = existing_scores.loc[complete_mask].copy()
-        completed_questions = set(complete_scores["question"].astype(str))
-        if not complete_scores.empty:
-            score_frames.append(complete_scores)
+            if metric in existing_scores.columns:
+                score_df[metric] = question_index.map(existing_scores[metric])
+        valid_cells = int(score_df[list(METRIC_COLUMNS)].notna().sum().sum())
+        total_cells = len(score_df) * len(METRIC_COLUMNS)
         print(
-            f"Melanjutkan {len(completed_questions)} skor lengkap dari checkpoint; "
-            f"{int((~complete_mask).sum())} skor parsial/NaN akan diulang."
+            f"Melanjutkan {valid_cells}/{total_cells} nilai metrik dari checkpoint; "
+            f"{total_cells - valid_cells} nilai kosong akan dievaluasi."
         )
 
-    pending_df = dataset_df[~dataset_df["question"].isin(completed_questions)].reset_index(drop=True)
-    total_batches = (len(pending_df) + batch_size - 1) // batch_size
-    print(
-        f"\nMemulai evaluasi RAGAS: {len(pending_df)} pertanyaan, "
-        f"{total_batches} batch, maksimal {max_workers} worker."
-    )
+    total_rounds = max(1, coverage_retry_rounds)
+    for metric in METRIC_COLUMNS:
+        for coverage_round in range(1, total_rounds + 1):
+            pending_questions = set(
+                score_df.loc[score_df[metric].isna(), "user_input"].astype(str)
+            )
+            if not pending_questions:
+                break
+            pending_df = dataset_df[
+                dataset_df["question"].astype(str).isin(pending_questions)
+            ].reset_index(drop=True)
+            total_batches = (len(pending_df) + batch_size - 1) // batch_size
+            print(
+                f"\nMetrik {metric}, putaran coverage "
+                f"{coverage_round}/{total_rounds}: {len(pending_df)} pertanyaan, "
+                f"{total_batches} batch, maksimal {max_workers} worker."
+            )
 
-    for start in range(0, len(pending_df), batch_size):
-        batch_number = start // batch_size + 1
-        batch_df = pending_df.iloc[start:start + batch_size].reset_index(drop=True)
-        print(f"\nBatch RAGAS {batch_number}/{total_batches} ({len(batch_df)} pertanyaan)")
-        batch_scores = run_ragas_batch(
-            batch_df,
-            llm,
-            embeddings,
-            timeout,
-            max_retries,
-            max_workers,
-        )
-        for metadata_column in ("category", "question_type"):
-            batch_scores[metadata_column] = batch_df[metadata_column].tolist()
-        score_frames.append(batch_scores)
-        combined_scores = pd.concat(score_frames, ignore_index=True)
-        combined_scores.to_csv(score_file, index=False)
+            for start in range(0, len(pending_df), batch_size):
+                batch_number = start // batch_size + 1
+                batch_df = pending_df.iloc[start:start + batch_size].reset_index(drop=True)
+                print(
+                    f"Batch {metric} {batch_number}/{total_batches} "
+                    f"({len(batch_df)} pertanyaan)"
+                )
+                batch_scores = run_ragas_batch(
+                    batch_df,
+                    llm,
+                    embeddings,
+                    timeout,
+                    max_retries,
+                    max_workers,
+                    metric_names=(metric,),
+                )
+                if metric not in batch_scores.columns:
+                    print(f"Peringatan: evaluator tidak menghasilkan kolom {metric}.")
+                    continue
+                values_by_question = batch_scores.set_index("user_input")[metric]
+                score_df.loc[:, metric] = score_df["user_input"].map(
+                    values_by_question
+                ).combine_first(score_df[metric])
+                score_df.to_csv(score_file, index=False)
 
-    if not score_frames:
-        raise RuntimeError("Tidak ada hasil RAGAS yang dihasilkan.")
-    return pd.concat(score_frames, ignore_index=True)
+        missing_count = int(score_df[metric].isna().sum())
+        if missing_count:
+            print(
+                f"Peringatan: {missing_count} nilai {metric} masih kosong setelah "
+                f"{total_rounds} putaran; jalankan kembali dengan --resume untuk mencoba lagi."
+            )
+
+    return score_df
 
 
 def save_results(score_df: pd.DataFrame, dataset_df: pd.DataFrame, output_dir: str) -> None:
@@ -528,6 +578,9 @@ def save_results(score_df: pd.DataFrame, dataset_df: pd.DataFrame, output_dir: s
     category_summary = score_df.groupby("category")[list(METRIC_COLUMNS)].agg(
         ["mean", "count"]
     )
+    category_summary.columns = [
+        f"{metric}_{statistic}" for metric, statistic in category_summary.columns
+    ]
     category_file = output_path / "ragas_summary_by_category.csv"
     category_summary.to_csv(category_file)
 
@@ -559,6 +612,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--timeout", type=int, default=300, help="Timeout tiap pekerjaan RAGAS.")
     parser.add_argument("--max-retries", type=int, default=3, help="Retry tiap pekerjaan RAGAS.")
     parser.add_argument("--max-workers", type=int, default=2, help="Jumlah worker paralel RAGAS.")
+    parser.add_argument(
+        "--coverage-retry-rounds",
+        type=int,
+        default=2,
+        help="Putaran tambahan untuk mengevaluasi ulang hanya nilai metrik yang masih kosong.",
+    )
     parser.add_argument(
         "--evaluator-max-tokens",
         type=int,
@@ -625,6 +684,7 @@ def main() -> None:
         args.max_retries,
         args.max_workers,
         args.resume,
+        args.coverage_retry_rounds,
     )
     save_results(score_df, dataset_df, args.output_dir)
 

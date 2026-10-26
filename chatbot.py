@@ -44,6 +44,13 @@ class ChatBot:
         "medis yang mendesak, segera hubungi dokter atau fasilitas kesehatan terdekat."
     )
 
+    # Shown by the UI under every answer, so the LLM does not have to append a
+    # generic referral sentence (RAGAS reads that sentence as noncommittal).
+    DOCTOR_REFERRAL_NOTE = (
+        "Informasi ini bersifat edukatif dan tidak menggantikan pemeriksaan. "
+        "Konsultasikan keputusan medis dengan dokter spesialis kandungan (Obgyn)."
+    )
+
     CONDITION_SCOPE_KEYWORDS = (
         "adenomyosis", "adenomiosis", "adenom", "endometriosis",
         "endometrioma", "kista coklat",
@@ -134,6 +141,16 @@ class ChatBot:
         "kunyit", "curcuma", "curcumin", "kurkumin", "jahe", "ginger",
         "ramuan", "aplikasi_herbal", "herbal_umum", "jamu_kunyit_asam",
     )
+
+    # Herbal documents about endometriosis/adenomyosis or menstrual pain.
+    # Fibroid and cervical-cancer herbal papers are deliberately excluded.
+    HERBAL_SOURCE_FILES = (
+        "herbal_ramuan_herbal_2024.pdf",
+        "herbal_aplikasi_herbal_umum_.pdf",
+        "jurnal_jamu_kunyit_asam_2021.pdf",
+        "jurnal_mahkota_dewa_endometriosis_2023.pdf",
+    )
+    MIN_HERBAL_CONTEXT_DOCS = 2
 
     HERBAL_SIGNAL_KEYWORDS = (
         "herbal", "jamu", "phaleria", "macrocarpa", "mahkota", "curcumin",
@@ -853,14 +870,50 @@ class ChatBot:
         question = self._split_contextual_question(question)[0]
         retrieval_query = self._build_retrieval_query(question)
         candidate_docs = self.source_retriever_chain.invoke(retrieval_query)
+        herbal_intent = self._is_herbal_intent(question)
+        if herbal_intent:
+            # Clinical words such as "terapi hormonal" or "operasi" can pull every
+            # unfiltered candidate from clinical journals; a source-filtered search
+            # keeps herbal documents in the pool for reranking.
+            herbal_candidates = self.vector_store.similarity_search(
+                retrieval_query,
+                k=12,
+                filter={"source": {"$in": list(self.HERBAL_SOURCE_FILES)}},
+            )
+            seen_chunks = {doc.page_content for doc in candidate_docs}
+            candidate_docs = candidate_docs + [
+                doc for doc in herbal_candidates if doc.page_content not in seen_chunks
+            ]
+
         ranked_docs = sorted(
             candidate_docs,
             key=lambda doc: self._doc_context_priority(doc, question),
             reverse=True,
         )
-        if self._is_herbal_intent(question):
-            return self._diversify_docs_by_source(ranked_docs, max(limit, 5))
-        return ranked_docs[:limit]
+        if not herbal_intent:
+            return ranked_docs[:limit]
+
+        selected = self._diversify_docs_by_source(ranked_docs, max(limit, 5))
+
+        def is_herbal_doc(doc):
+            return doc.metadata.get("source", "") in self.HERBAL_SOURCE_FILES
+
+        missing = self.MIN_HERBAL_CONTEXT_DOCS - sum(is_herbal_doc(doc) for doc in selected)
+        if missing > 0:
+            extra_herbal = [
+                doc for doc in ranked_docs if is_herbal_doc(doc) and doc not in selected
+            ][:missing]
+            # Replace the lowest-ranked non-herbal chunks, keeping rank order.
+            for herbal_doc in extra_herbal:
+                for idx in range(len(selected) - 1, -1, -1):
+                    if not is_herbal_doc(selected[idx]):
+                        selected[idx] = herbal_doc
+                        break
+            selected.sort(
+                key=lambda doc: self._doc_context_priority(doc, question),
+                reverse=True,
+            )
+        return selected
 
     def _trim_doc_text(self, text: str, question: str, max_chars: int = 900) -> str:
         compact_text = re.sub(r"\s+", " ", text).strip()
@@ -964,7 +1017,7 @@ class ChatBot:
                     "content": (
                         "Jawaban sebelumnya terpotong. Lanjutkan langsung dari bagian terakhir "
                         "tanpa mengulang bagian awal, selesaikan kalimat yang terpotong, lalu "
-                        "akhiri dengan kesimpulan dan anjuran konsultasi dokter spesialis."
+                        "akhiri dengan kesimpulan singkat."
                     ),
                 },
             ]
@@ -1139,7 +1192,7 @@ class ChatBot:
                             "satu kalimat singkat menjelang akhir jawaban; jangan menebak. Jangan menyatakan bahwa pengguna memiliki "
                             "diagnosis, kondisi, tingkat keparahan, atau kebutuhan pengobatan tertentu "
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
-                            "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
+                            "tidak cukup, jelaskan secara umum tanpa menebak. "
                             "Untuk pertanyaan perawatan, pengobatan, terapi, atau tatalaksana, "
                             "ikuti intent pengguna. Jika pengguna bertanya umum tentang perawatan "
                             "atau pengobatan, jadikan pilihan medis klinis berbasis bukti sebagai "
@@ -1198,8 +1251,9 @@ class ChatBot:
                             "Untuk pertanyaan non-herbal tentang perawatan/pengobatan, jawab dengan "
                             "bagian klinis yang jelas dan cukup lengkap, bukan daftar herbal. Untuk "
                             "pertanyaan non-herbal lain, jawab dalam 2-3 paragraf yang mudah dipahami. "
-                            "Akhiri dengan anjuran "
-                            "untuk konsultasi dokter spesialis."
+                            "Jangan menutup jawaban dengan anjuran umum untuk berkonsultasi "
+                            "ke dokter; aplikasi sudah menampilkan catatan rujukan dokter "
+                            "secara terpisah."
                         )
                     }
                 ]

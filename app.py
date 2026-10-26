@@ -88,7 +88,9 @@ def render_chat_page():
     for message in st.session_state.messages:
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
-            
+            if message["role"] == "assistant":
+                st.caption(f"🩺 {ChatBot.DOCTOR_REFERRAL_NOTE}")
+
             # Tampilkan sources dengan metadata jika ada
             if "sources" in message and message["sources"]:
                 st.markdown("---")
@@ -129,6 +131,7 @@ def render_chat_page():
             with st.spinner("Menganalisis dokumen medis dengan metadata filtering..."):
                 response = bot.ask(user_input, chat_history=chat_history)
                 st.markdown(response["answer"])
+                st.caption(f"🩺 {ChatBot.DOCTOR_REFERRAL_NOTE}")
                 
                 # Tampilkan sumber dengan metadata
                 if response["sources"]:

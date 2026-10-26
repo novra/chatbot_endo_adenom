@@ -935,23 +935,23 @@ class ChatBot:
             history_context = parts[1].strip() if len(parts) > 1 else ""
             return user_question, history_context
 
-        def looks_truncated(answer):
-            if not answer:
+        def looks_truncated(answer, finish_reason=None):
+            # The API reports "length" when max_tokens cut the output; thinking
+            # models can spend most of that budget on reasoning, so short answers
+            # may also be cut. A complete answer ends with closing punctuation.
+            if finish_reason == "length" or not answer:
                 return True
 
-            stripped_answer = answer.rstrip()
-            if stripped_answer.endswith((".", "!", "?", ")", "]")):
-                return False
-            if len(stripped_answer.split()) > 12:
-                return True
+            stripped_answer = answer.rstrip().rstrip("*_\"'”’").rstrip()
+            return not stripped_answer.endswith((".", "!", "?", ")", "]"))
 
-            trailing_words = (
-                "dan", "atau", "dengan", "untuk", "dalam", "pada", "sebagai",
-                "karena", "namun", "meskipun", "efek", "perbedaan", "meliputi",
-                "seperti", "antara", "yang", "dapat",
-            )
-            last_words = stripped_answer.lower().split()[-4:]
-            return True if not last_words else last_words[-1].strip(",:;") in trailing_words
+        def thinking_model_tokens(tokens):
+            if self.model_name and any(
+                model_family in self.model_name
+                for model_family in ("Qwen3.6", "Qwen3.5")
+            ):
+                return max(tokens, 3200)
+            return tokens
 
         def request_completion_continuation(messages, partial_answer):
             continuation_messages = messages + [
@@ -972,12 +972,13 @@ class ChatBot:
             response = self.hf_client.chat.completions.create(
                 messages=continuation_messages,
                 model=self.model_name,
-                max_tokens=450,
+                max_tokens=thinking_model_tokens(450),
                 temperature=0.4,
                 top_p=0.9
             )
-            message = response.choices[0].message
-            continuation = message.content or getattr(message, "reasoning_content", "")
+            # Never surface reasoning_content: it is the model's internal
+            # scratchpad, not an answer suitable for users.
+            continuation = response.choices[0].message.content
             return continuation.strip() if continuation else ""
 
         def call_llm(inputs):
@@ -1000,16 +1001,18 @@ class ChatBot:
                     herbal_instruction = (
                         "Pertanyaan pengguna berfokus pada keamanan herbal atau apakah herbal "
                         "dapat menggantikan terapi dokter. Jawab langsung bahwa herbal tidak "
-                        "boleh menggantikan diagnosis atau terapi dokter. Fokus pada batas bukti, "
-                        "keamanan, dosis, kualitas produk, efek samping, interaksi dengan obat "
-                        "atau terapi hormonal, kondisi kehamilan/rencana operasi, dan perlunya "
-                        "konsultasi tenaga kesehatan. Untuk pertanyaan keamanan, jangan menyebut "
+                        "boleh menggantikan diagnosis atau terapi dokter, lalu jawab aspek yang "
+                        "ditanyakan secara spesifik. Untuk pertanyaan keamanan, jangan menyebut "
                         "nama herbal spesifik kecuali pengguna menyebut nama herbal tersebut secara "
                         "eksplisit. Jangan membuat daftar herbal. Jawab ringkas dalam 1 paragraf "
-                        "pembuka dan 4-6 poin checklist. Isi checklist harus mencakup: diagnosis "
-                        "dan evaluasi dokter, bukti klinis terbatas, keamanan, dosis, kualitas "
-                        "produk, efek samping, interaksi obat/terapi hormonal, kehamilan atau "
-                        "rencana operasi, dan konsultasi tenaga kesehatan."
+                        "pembuka dan paling banyak 4 poin. Setiap poin harus memuat fakta yang "
+                        "tertulis dalam konteks, misalnya tentang batas bukti, efek samping, "
+                        "interaksi obat/terapi hormonal, kualitas produk, kehamilan, atau rencana "
+                        "operasi. Jangan membuat poin tentang aspek yang tidak dibahas konteks dan "
+                        "jangan menambahkan saran umum (dosis, waktu penghentian, risiko) dari "
+                        "pengetahuan internal. Bila aspek yang ditanyakan tidak dibahas konteks, "
+                        "nyatakan satu kali secara singkat bahwa bukti untuk aspek itu belum "
+                        "tersedia dan perlu dibicarakan dengan dokter."
                     )
                 else:
                     herbal_instruction = (
@@ -1127,9 +1130,13 @@ class ChatBot:
                             "profesional. Setiap klaim faktual medis dalam jawaban harus dapat "
                             "ditelusuri secara langsung ke informasi medis yang diberikan dalam "
                             "prompt ini. Jangan memakai pengetahuan internal untuk melengkapi detail "
-                            "yang tidak tercantum dalam konteks. Jika konteks tidak mendukung suatu "
-                            "bagian pertanyaan, nyatakan singkat bahwa informasi tersebut tidak cukup "
-                            "tersedia; jangan menebak. Jangan menyatakan bahwa pengguna memiliki "
+                            "yang tidak tercantum dalam konteks. Jawab langsung pokok pertanyaan pada "
+                            "kalimat pertama memakai informasi relevan yang ada di konteks, termasuk "
+                            "informasi yang hanya menjawab sebagian. Jangan membuka jawaban dengan "
+                            "pernyataan bahwa informasi tidak tersedia atau dengan frasa seperti "
+                            "'Berdasarkan informasi yang tersedia'. Hanya bila ada bagian pertanyaan "
+                            "yang sama sekali tidak didukung konteks, sebutkan keterbatasan itu dalam "
+                            "satu kalimat singkat menjelang akhir jawaban; jangan menebak. Jangan menyatakan bahwa pengguna memiliki "
                             "diagnosis, kondisi, tingkat keparahan, atau kebutuhan pengobatan tertentu "
                             "kecuali informasi itu tertulis eksplisit dalam pertanyaan. Jika informasi "
                             "tidak cukup, jelaskan secara umum dan sarankan konsultasi dokter spesialis. "
@@ -1170,6 +1177,8 @@ class ChatBot:
                             "tidak memiliki dukungan eksplisit dalam konteks. Hindari menambahkan "
                             "angka, mekanisme, indikasi, manfaat, risiko, atau rekomendasi spesifik "
                             "yang tidak tercantum dalam konteks. "
+                            "Mulai jawaban langsung dengan inti jawaban atas pertanyaan pengguna, "
+                            "bukan dengan pernyataan tentang ketersediaan informasi. "
                             "Jangan menganggap pengguna adalah pasien atau mendiagnosis pengguna. "
                             "Jika sumber menyebut Phaleria macrocarpa atau file mahkota_dewa, sebutkan "
                             "sebagai mahkota dewa (Phaleria macrocarpa), bukan istilah lain, tetapi "
@@ -1203,23 +1212,34 @@ class ChatBot:
                     max_answer_tokens = 600
                 elif not self._normalize_question(user_question).startswith("apa itu"):
                     max_answer_tokens = 1200
-                if self.model_name and any(
-                    model_family in self.model_name
-                    for model_family in ("Qwen3.6", "Qwen3.5")
-                ):
-                    max_answer_tokens = max(max_answer_tokens, 3200)
+                max_answer_tokens = thinking_model_tokens(max_answer_tokens)
 
-                response = self.hf_client.chat.completions.create(
-                    messages=messages,
-                    model=self.model_name,
-                    max_tokens=max_answer_tokens,
-                    temperature=0.2,
-                    top_p=0.85
-                )
-                
-                # Extract answer
-                answer = response.choices[0].message.content.strip()
-                if looks_truncated(answer):
+                # A thinking model can exhaust max_tokens on reasoning and return
+                # empty or very short content; retry once with a larger budget
+                # instead of showing reasoning_content or a fragment.
+                answer = ""
+                finish_reason = None
+                for token_budget in (max_answer_tokens, max_answer_tokens * 2):
+                    response = self.hf_client.chat.completions.create(
+                        messages=messages,
+                        model=self.model_name,
+                        max_tokens=token_budget,
+                        temperature=0.2,
+                        top_p=0.85
+                    )
+                    choice = response.choices[0]
+                    answer = (choice.message.content or "").strip()
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    if answer and not (finish_reason == "length" and len(answer.split()) < 40):
+                        break
+                    print(
+                        f"Answer empty or cut short (finish_reason={finish_reason}); "
+                        "retrying with larger token budget"
+                    )
+
+                if not answer:
+                    raise ValueError("Model mengembalikan respons tanpa content.")
+                if looks_truncated(answer, finish_reason):
                     print("Answer looks truncated; requesting continuation")
                     continuation = request_completion_continuation(messages, answer)
                     if continuation:
